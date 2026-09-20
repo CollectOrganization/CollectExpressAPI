@@ -16,7 +16,7 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin) || origin.startsWith('http://192.168.')) {
+    if (!origin || allowedOrigins.includes(origin) || origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:') || origin.startsWith('http://192.168.')) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
@@ -62,6 +62,8 @@ const carrinhoRoutes = require("./routes/carrinhoRoutes");
 const alugueisRoutes = require("./routes/alugueisRoutes");
 const avaliacoesRoutes = require("./routes/avaliacoesRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const parceirosRoutes = require("./routes/parceirosRoutes");
+const coletasRoutes = require("./routes/coletasRoutes");
 
 // --- Definição dos Endpoints ---
 app.use("/api/auth", authRoutes);
@@ -73,6 +75,8 @@ app.use("/api/carrinho", carrinhoRoutes);
 app.use("/api/alugueis", alugueisRoutes);
 app.use("/api/avaliacoes", avaliacoesRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/parceiros", parceirosRoutes);
+app.use("/api/coletas", coletasRoutes);
 
 // --- Middleware para Rotas Não Encontradas (404) ---
 app.use((req, res, next) => {

@@ -235,3 +235,46 @@ CREATE INDEX IF NOT EXISTS idx_avaliacoes_data ON avaliacoes(data_avaliacao DESC
 
 -- Categorias
 CREATE INDEX IF NOT EXISTS idx_categorias_nome ON categorias(nome);
+
+-- ============================================
+-- PARCEIROS DE RECICLAGEM E COLETAS
+-- ============================================
+
+-- Detalhes Parceiro de Reciclagem
+CREATE TABLE IF NOT EXISTS detalhes_parceiro (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  usuario_id UUID NOT NULL,
+  capacidade_diaria_kg DECIMAL(10, 2) NOT NULL,
+  materiais_aceitos TEXT NOT NULL,
+  endereco_coleta VARCHAR(255) NOT NULL,
+  disponivel BOOLEAN NOT NULL DEFAULT TRUE,
+
+  CONSTRAINT fk_detalhes_parceiro_usuario
+    FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+  CONSTRAINT detalhes_parceiro_usuario_unique UNIQUE (usuario_id)
+);
+
+-- Coletas Agendadas
+CREATE TABLE IF NOT EXISTS coletas (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  consumidor_id UUID NOT NULL,
+  parceiro_id UUID NOT NULL,
+  endereco_id UUID NOT NULL,
+  materiais TEXT NOT NULL,
+  data_agendada TIMESTAMP NOT NULL,
+  status VARCHAR(50) NOT NULL DEFAULT 'PENDENTE',
+  criado_em TIMESTAMP NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT fk_coletas_consumidor
+    FOREIGN KEY (consumidor_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+  CONSTRAINT fk_coletas_parceiro
+    FOREIGN KEY (parceiro_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+  CONSTRAINT fk_coletas_endereco
+    FOREIGN KEY (endereco_id) REFERENCES enderecos(id) ON DELETE RESTRICT
+);
+
+-- Indexes for new tables
+CREATE INDEX IF NOT EXISTS idx_detalhes_parceiro_usuario ON detalhes_parceiro(usuario_id);
+CREATE INDEX IF NOT EXISTS idx_coletas_consumidor ON coletas(consumidor_id);
+CREATE INDEX IF NOT EXISTS idx_coletas_parceiro ON coletas(parceiro_id);
+CREATE INDEX IF NOT EXISTS idx_coletas_data ON coletas(data_agendada);
