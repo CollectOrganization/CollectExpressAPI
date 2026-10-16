@@ -12,7 +12,7 @@ const {
   loginLimiter,
   registerLimiter,
   passwordRecoveryLimiter,
-  // refreshTokenLimiter,
+  refreshTokenLimiter,
 } = require("../middlewares/securityRateLimits");
 
 const router = express.Router();
@@ -294,6 +294,29 @@ const resetPasswordSchema = {
   },
 };
 
+/*
+* Schema para atualização e termino do
+* uso dos tokens de perfil de usuário
+*/
+
+const refreshSchema = {
+  refresh_token: {
+    required: true,
+    type: "string",
+    minLength: 20,
+    maxLength: 200,
+  },
+};
+
+const logoutSchema = {
+  refresh_token: {
+    required: true,
+    type: "string",
+    minLength: 20,
+    maxLength: 200,
+  },
+};
+
 /**
  * POST /api/auth/register
  *
@@ -350,6 +373,7 @@ router.post(
 router.post(
   "/logout",
   authMiddleware,
+  validationMiddleware(logoutSchema),
   authController.logout,
 );
 
@@ -361,10 +385,11 @@ router.post(
  * "TypeError: argument handler must be a function".
  */
 
-// router.post(
-//   "/refresh",
-//   refreshTokenLimiter,
-//   authController.refresh,
-// );
+router.post(
+  "/refresh",
+  refreshTokenLimiter,
+  validationMiddleware(refreshSchema),
+  authController.refresh,
+);
 
 module.exports = router;

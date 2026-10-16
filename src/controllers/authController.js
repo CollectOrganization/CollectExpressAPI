@@ -1,6 +1,17 @@
 const sql = require("../config/db");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
+
+/* vai ser centralizado no tokenservice.js agora
+const jwt = require("jsonwebtoken");*/
+
+const {
+  createAccessToken,
+  createRefreshToken,
+  rotateRefreshToken,
+  revokeRefreshToken,
+  revokeAccessToken,
+} = require("../services/tokenService");
+
 const crypto = require("crypto");
 
 const {
@@ -230,59 +241,59 @@ const authController = {
   /**
    * POST /api/auth/login
    *
-   * Autentica qualquer perfil existente:
-   * - CONSUMIDOR
-   * - CACAMBEIRO
-   * - ADMIN
+   * Autentica CONSUMIDOR, CACAMBEIRO ou ADMIN.
+   * Retorna um access token de curta duração e um refresh token.
    */
   async login(req, res) {
     try {
       const { email, senha } = req.body;
       const ip = getClientIp(req);
 
-      // Normaliza o e-mail recebido.
+      // Defesa adicional, mesmo existindo validationMiddleware.
+      if (
+        typeof email !== "string" ||
+        typeof senha !== "string"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "E-mail e senha são obrigatórios.",
+          code: "VALIDATION_ERROR",
+        });
+      }
+
+      // Normaliza o e-mail para evitar diferenças por caixa e espaços.
       const emailNormalizado = email.trim().toLowerCase();
 
-      /**
-       * Busca case-insensitive.
-       *
-       * Isso permite que o usuário faça login mesmo digitando
-       * letras maiúsculas no e-mail.
-       */
       const usuarios = await sql`
-        SELECT *
+        SELECT
+          id,
+          nome_completo,
+          email,
+          senha_hash,
+          tipo_perfil,
+          status
         FROM usuarios
         WHERE LOWER(email) = ${emailNormalizado}
+        LIMIT 1
       `;
 
       const usuario = usuarios[0];
 
+      /*
+      * A mesma resposta é utilizada para usuário inexistente e senha
+      * incorreta, evitando revelar quais e-mails estão cadastrados.
+      */
       if (!usuario) {
-        // Aguarda o registro da tentativa antes de responder.
         await recordFailedAttempt(ip);
 
         return res.status(401).json({
-          error: "Credenciais inválidas",
-        });
-      }
-
-      if (usuario.status === "PENDENTE") {
-        return res.status(403).json({
           success: false,
-          message: "Seu cadastro ainda está aguardando aprovação.",
-          code: "USER_PENDING",
+          message: "Credenciais inválidas.",
+          code: "INVALID_CREDENTIALS",
         });
       }
 
-      if (usuario.status === "SUSPENSO") {
-        return res.status(403).json({
-          success: false,
-          message: "Sua conta está suspensa.",
-          code: "USER_SUSPENDED",
-        });
-      }
-
-      // Compara a senha informada com o hash armazenado.
+      // A senha é conferida antes de revelar o status da conta.
       const senhaValida = await bcrypt.compare(
         senha,
         usuario.senha_hash,
@@ -292,51 +303,86 @@ const authController = {
         await recordFailedAttempt(ip);
 
         return res.status(401).json({
-          error: "Credenciais inválidas",
+          success: false,
+          message: "Credenciais inválidas.",
+          code: "INVALID_CREDENTIALS",
         });
       }
 
-      // Login válido: limpa as tentativas anteriores desse IP.
+      // Impede que contas ainda não aprovadas iniciem uma sessão.
+      if (usuario.status === "PENDENTE") {
+        return res.status(403).json({
+          success: false,
+          message: "Seu cadastro ainda está aguardando aprovação.",
+          code: "USER_PENDING",
+        });
+      }
+
+      // Impede login de contas suspensas.
+      if (usuario.status === "SUSPENSO") {
+        return res.status(403).json({
+          success: false,
+          message: "Sua conta está suspensa.",
+          code: "USER_SUSPENDED",
+        });
+      }
+
+      /*
+      * Proteção para valores inesperados ou registros antigos sem
+      * status válido.
+      */
+      if (usuario.status !== "ATIVO") {
+        return res.status(403).json({
+          success: false,
+          message: "Sua conta não está disponível para acesso.",
+          code: "USER_INACTIVE",
+        });
+      }
+
+      // Login válido: remove tentativas anteriores associadas ao IP.
       await resetAttempts(ip);
 
-      /**
-       * O token contém apenas as informações necessárias
-       * para identificar e autorizar o usuário.
-       */
-      const payload = {
-        id: usuario.id,
-        tipo_perfil: usuario.tipo_perfil,
-      };
+      /*
+      * Access token:
+      * - usado no header Authorization;
+      * - possui duração curta;
+      * - contém id e perfil.
+      */
+      const accessToken = createAccessToken(usuario);
 
-      /**
-       * O tempo de expiração é configurado pelo .env.
-       *
-       * Exemplo:
-       * JWT_EXPIRES_IN=1h
-       */
-      const token = jwt.sign(
-        payload,
-        process.env.JWT_SECRET,
-        {
-          expiresIn: process.env.JWT_EXPIRES_IN || "1h",
-        },
-      );
+      /*
+      * Refresh token:
+      * - possui duração maior;
+      * - permite renovar a sessão;
+      * - somente seu hash é armazenado no banco.
+      */
+      const refresh = await createRefreshToken(usuario.id);
 
-      // Nunca retornar senha_hash para o frontend.
+      // Nunca retornar senha_hash.
       return res.status(200).json({
-        token,
-        usuario: {
-          id: usuario.id,
-          nome_completo: usuario.nome_completo,
-          email: usuario.email,
-          tipo_perfil: usuario.tipo_perfil,
+        success: true,
+        data: {
+          access_token: accessToken,
+          refresh_token: refresh.refreshToken,
+          token_type: "Bearer",
+          expires_in: process.env.JWT_EXPIRES_IN || "15m",
+          refresh_expires_at: refresh.expiresAt.toISOString(),
+          usuario: {
+            id: usuario.id,
+            nome_completo: usuario.nome_completo,
+            email: usuario.email,
+            tipo_perfil: usuario.tipo_perfil,
+            status: usuario.status,
+          },
         },
       });
     } catch (error) {
       console.error("Erro no login:", error);
 
       return res.status(500).json({
-        error: "Erro interno no servidor",
+        success: false,
+        message: "Erro interno no servidor.",
+        code: "INTERNAL_SERVER_ERROR",
       });
     }
   },
@@ -349,30 +395,23 @@ const authController = {
    */
   async logout(req, res) {
     try {
-      const token = req.token;
+      const { refresh_token } = req.body;
 
-      if (token) {
-        await sql`
-          INSERT INTO revoked_tokens (
-            token,
-            revoked_at
-          )
-          VALUES (
-            ${token},
-            NOW()
-          )
-          ON CONFLICT DO NOTHING
-        `;
-      }
+      await revokeAccessToken(req.token);
+      await revokeRefreshToken(refresh_token);
 
       return res.status(200).json({
-        message: "Logout realizado com sucesso",
+        success: true,
+        message: "Logout realizado com sucesso.",
+        data: null,
       });
     } catch (error) {
       console.error("Erro no logout:", error);
 
       return res.status(500).json({
-        error: "Erro interno no servidor",
+        success: false,
+        message: "Erro interno no servidor.",
+        code: "INTERNAL_SERVER_ERROR",
       });
     }
   },
@@ -538,6 +577,49 @@ const authController = {
       });
     }
   },
+
+  async refresh(req, res) {
+  try {
+    const { refresh_token } = req.body;
+
+    const rotated = await rotateRefreshToken(refresh_token);
+
+    if (!rotated) {
+      return res.status(401).json({
+        success: false,
+        message: "Refresh token inválido, expirado ou já utilizado.",
+        code: "INVALID_REFRESH_TOKEN",
+      });
+    }
+
+    const accessToken = createAccessToken(rotated.usuario);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        access_token: accessToken,
+        refresh_token: rotated.refreshToken,
+        token_type: "Bearer",
+        expires_in: process.env.JWT_EXPIRES_IN || "15m",
+        usuario: {
+          id: rotated.usuario.id,
+          nome_completo: rotated.usuario.nome_completo,
+          email: rotated.usuario.email,
+          tipo_perfil: rotated.usuario.tipo_perfil,
+          status: rotated.usuario.status,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Erro ao renovar sessão:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Erro interno ao renovar a sessão.",
+      code: "INTERNAL_SERVER_ERROR",
+    });
+  }
+},
 };
 
 /**
