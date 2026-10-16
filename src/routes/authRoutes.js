@@ -1,48 +1,88 @@
 const express = require("express");
-const router = express.Router();
-const authController = require("../controllers/authController");
-const validationMiddleware = require("../middlewares/validationMiddleware");
-const { rateLimitMiddleware } = require("../middlewares/rateLimitMiddleware");
-const authMiddleware = require("../middlewares/authMiddleware");
 
-// Schema de validação para registro
+const authController = require("../controllers/authController");
+const authMiddleware = require("../middlewares/authMiddleware");
+const validationMiddleware = require(
+  "../middlewares/validationMiddleware",
+);
+const {
+  rateLimitMiddleware,
+} = require("../middlewares/rateLimitMiddleware");
+const {
+  loginLimiter,
+  registerLimiter,
+  passwordRecoveryLimiter,
+  // refreshTokenLimiter,
+} = require("../middlewares/securityRateLimits");
+
+const router = express.Router();
+
+/**
+ * Valida a política de senha utilizada no cadastro
+ * e na redefinição de senha.
+ */
+function validateStrongPassword(value) {
+  const hasUppercase = /[A-Z]/.test(value);
+  const hasLowercase = /[a-z]/.test(value);
+  const hasDigit = /\d/.test(value);
+
+  if (!hasUppercase || !hasLowercase || !hasDigit) {
+    return (
+      "A senha deve conter pelo menos uma letra maiúscula, " +
+      "uma minúscula e um dígito"
+    );
+  }
+
+  return true;
+}
+
+/**
+ * Schema para o cadastro público.
+ *
+ * Por segurança, somente os perfis CONSUMIDOR e CACAMBEIRO
+ * podem ser criados por este endpoint.
+ *
+ * O perfil ADMIN deve ser criado exclusivamente por um
+ * administrador autenticado em POST /api/usuarios/admin.
+ */
 const registerSchema = {
   nome_completo: {
     required: true,
     type: "string",
     minLength: 3,
-    maxLength: 150
+    maxLength: 150,
   },
   email: {
     required: true,
     type: "string",
     format: "email",
-    maxLength: 255
+    maxLength: 255,
   },
   senha: {
     required: true,
     type: "string",
     minLength: 8,
     maxLength: 128,
-    custom: (value) => {
-      const hasUppercase = /[A-Z]/.test(value);
-      const hasLowercase = /[a-z]/.test(value);
-      const hasDigit = /\d/.test(value);
-      if (!hasUppercase || !hasLowercase || !hasDigit) {
-        return "A senha deve conter pelo menos uma letra maiúscula, uma minúscula e um dígito";
-      }
-      return true;
-    }
+    custom: validateStrongPassword,
   },
   tipo_perfil: {
     required: true,
     type: "string",
     custom: (value) => {
-      if (value !== "CONSUMIDOR" && value !== "CACAMBEIRO") {
-        return "O tipo de perfil deve ser 'CONSUMIDOR' ou 'CACAMBEIRO'";
+      const allowedProfiles = [
+        "CONSUMIDOR",
+        "CACAMBEIRO",
+      ];
+
+      if (!allowedProfiles.includes(value)) {
+        return (
+          "O tipo de perfil deve ser " +
+          "'CONSUMIDOR' ou 'CACAMBEIRO'"
+        );
       }
+
       return true;
-    }
+    },
   },
   documento: {
     required: true,
@@ -50,143 +90,281 @@ const registerSchema = {
     format: "digits",
     custom: (value) => {
       if (value.length !== 11 && value.length !== 14) {
-        return "Documento deve ter 11 (CPF) ou 14 (CNPJ) dígitos";
+        return (
+          "Documento deve ter 11 dígitos para CPF " +
+          "ou 14 dígitos para CNPJ"
+        );
       }
+
       return true;
-    }
+    },
   },
   telefone: {
     required: true,
     type: "string",
     format: "digits",
     minLength: 10,
-    maxLength: 11
-  }
+    maxLength: 11,
+  },
 };
 
 /**
- * Middleware adicional para validar campos de CACAMBEIRO.
- * Executado após a validação base, verifica campos de negócio quando tipo_perfil === 'CACAMBEIRO'.
+ * Validação adicional para o cadastro de CACAMBEIRO.
+ *
+ * Esses campos não são exigidos para consumidores.
  */
 function validateCacambeiroDetails(req, res, next) {
   if (req.body.tipo_perfil !== "CACAMBEIRO") {
     return next();
   }
 
-  const { horario_inicio, horario_fim, raio_entrega_km, taxa_entrega } = req.body;
-  const erros = [];
-  const TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+  const {
+    horario_inicio,
+    horario_fim,
+    raio_entrega_km,
+    taxa_entrega,
+  } = req.body;
 
-  // horario_inicio
-  if (!horario_inicio || typeof horario_inicio !== "string") {
-    erros.push({ campo: "horario_inicio", mensagem: "O campo 'horario_inicio' é obrigatório" });
-  } else if (!TIME_REGEX.test(horario_inicio)) {
-    erros.push({ campo: "horario_inicio", mensagem: "O campo 'horario_inicio' deve estar no formato HH:MM (00:00-23:59)" });
+  const errors = [];
+  const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+  if (
+    !horario_inicio ||
+    typeof horario_inicio !== "string"
+  ) {
+    errors.push({
+      campo: "horario_inicio",
+      mensagem:
+        "O campo 'horario_inicio' é obrigatório",
+    });
+  } else if (!timeRegex.test(horario_inicio)) {
+    errors.push({
+      campo: "horario_inicio",
+      mensagem:
+        "O campo 'horario_inicio' deve estar no formato HH:MM",
+    });
   }
 
-  // horario_fim
-  if (!horario_fim || typeof horario_fim !== "string") {
-    erros.push({ campo: "horario_fim", mensagem: "O campo 'horario_fim' é obrigatório" });
-  } else if (!TIME_REGEX.test(horario_fim)) {
-    erros.push({ campo: "horario_fim", mensagem: "O campo 'horario_fim' deve estar no formato HH:MM (00:00-23:59)" });
-  } else if (horario_inicio && TIME_REGEX.test(horario_inicio) && horario_fim <= horario_inicio) {
-    erros.push({ campo: "horario_fim", mensagem: "O campo 'horario_fim' deve ser posterior a 'horario_inicio'" });
+  if (
+    !horario_fim ||
+    typeof horario_fim !== "string"
+  ) {
+    errors.push({
+      campo: "horario_fim",
+      mensagem: "O campo 'horario_fim' é obrigatório",
+    });
+  } else if (!timeRegex.test(horario_fim)) {
+    errors.push({
+      campo: "horario_fim",
+      mensagem:
+        "O campo 'horario_fim' deve estar no formato HH:MM",
+    });
+  } else if (
+    horario_inicio &&
+    timeRegex.test(horario_inicio) &&
+    horario_fim <= horario_inicio
+  ) {
+    errors.push({
+      campo: "horario_fim",
+      mensagem:
+        "O horário final deve ser posterior ao horário inicial",
+    });
   }
 
-  // raio_entrega_km
-  if (raio_entrega_km === undefined || raio_entrega_km === null) {
-    erros.push({ campo: "raio_entrega_km", mensagem: "O campo 'raio_entrega_km' é obrigatório" });
-  } else if (typeof raio_entrega_km !== "number" || isNaN(raio_entrega_km)) {
-    erros.push({ campo: "raio_entrega_km", mensagem: "O campo 'raio_entrega_km' deve ser do tipo 'number'" });
-  } else if (raio_entrega_km < 1 || raio_entrega_km > 200) {
-    erros.push({ campo: "raio_entrega_km", mensagem: "O campo 'raio_entrega_km' deve ser entre 1 e 200" });
+  if (
+    raio_entrega_km === undefined ||
+    raio_entrega_km === null
+  ) {
+    errors.push({
+      campo: "raio_entrega_km",
+      mensagem:
+        "O campo 'raio_entrega_km' é obrigatório",
+    });
+  } else if (
+    typeof raio_entrega_km !== "number" ||
+    Number.isNaN(raio_entrega_km)
+  ) {
+    errors.push({
+      campo: "raio_entrega_km",
+      mensagem:
+        "O campo 'raio_entrega_km' deve ser numérico",
+    });
+  } else if (
+    raio_entrega_km < 1 ||
+    raio_entrega_km > 200
+  ) {
+    errors.push({
+      campo: "raio_entrega_km",
+      mensagem:
+        "O raio de entrega deve estar entre 1 e 200 km",
+    });
   }
 
-  // taxa_entrega
-  if (taxa_entrega === undefined || taxa_entrega === null) {
-    erros.push({ campo: "taxa_entrega", mensagem: "O campo 'taxa_entrega' é obrigatório" });
-  } else if (typeof taxa_entrega !== "number" || isNaN(taxa_entrega)) {
-    erros.push({ campo: "taxa_entrega", mensagem: "O campo 'taxa_entrega' deve ser do tipo 'number'" });
-  } else if (taxa_entrega < 0.01 || taxa_entrega > 99999.99) {
-    erros.push({ campo: "taxa_entrega", mensagem: "O campo 'taxa_entrega' deve ser entre 0.01 e 99999.99" });
+  if (
+    taxa_entrega === undefined ||
+    taxa_entrega === null
+  ) {
+    errors.push({
+      campo: "taxa_entrega",
+      mensagem:
+        "O campo 'taxa_entrega' é obrigatório",
+    });
+  } else if (
+    typeof taxa_entrega !== "number" ||
+    Number.isNaN(taxa_entrega)
+  ) {
+    errors.push({
+      campo: "taxa_entrega",
+      mensagem:
+        "O campo 'taxa_entrega' deve ser numérico",
+    });
+  } else if (
+    taxa_entrega < 0.01 ||
+    taxa_entrega > 99999.99
+  ) {
+    errors.push({
+      campo: "taxa_entrega",
+      mensagem:
+        "A taxa de entrega deve estar entre 0.01 e 99999.99",
+    });
   }
 
-  if (erros.length > 0) {
-    return res.status(400).json({ errors: erros });
+  if (errors.length > 0) {
+    const fields = {};
+
+    for (const error of errors) {
+      fields[error.campo] = error.mensagem;
+    }
+
+    return res.status(400).json({
+      success: false,
+      message: "Dados do caçambeiro inválidos.",
+      code: "VALIDATION_ERROR",
+      fields,
+    });
   }
 
   return next();
 }
 
-// Schema de validação para login
+/**
+ * Login aceita seis caracteres porque as contas acadêmicas
+ * criadas pelo seed utilizam a senha 123456.
+ *
+ * Novos cadastros continuam exigindo uma senha forte
+ * com pelo menos oito caracteres.
+ */
 const loginSchema = {
   email: {
     required: true,
     type: "string",
-    format: "email"
+    format: "email",
+    maxLength: 255,
   },
   senha: {
     required: true,
     type: "string",
     minLength: 6,
-    maxLength: 128
-  }
+    maxLength: 128,
+  },
 };
 
-// Schema de validação para forgot-password
 const forgotPasswordSchema = {
   email: {
     required: true,
     type: "string",
-    format: "email"
-  }
+    format: "email",
+    maxLength: 255,
+  },
 };
 
-// Schema de validação para reset-password
 const resetPasswordSchema = {
   token: {
     required: true,
-    type: "string"
+    type: "string",
+    minLength: 1,
+    maxLength: 256,
   },
   nova_senha: {
     required: true,
     type: "string",
     minLength: 8,
-    maxLength: 128
-  }
+    maxLength: 128,
+    custom: validateStrongPassword,
+  },
 };
 
-// Rotas públicas
+/**
+ * POST /api/auth/register
+ *
+ * Cadastro público somente para CONSUMIDOR e CACAMBEIRO.
+ */
 router.post(
   "/register",
+  registerLimiter,
   validationMiddleware(registerSchema),
   validateCacambeiroDetails,
-  authController.register
+  authController.register,
 );
 
+/**
+ * POST /api/auth/login
+ *
+ * Possui dois níveis de proteção:
+ * - express-rate-limit;
+ * - controle persistido de tentativas por IP.
+ */
 router.post(
   "/login",
+  loginLimiter,
   rateLimitMiddleware,
   validationMiddleware(loginSchema),
-  authController.login
+  authController.login,
 );
 
+/**
+ * POST /api/auth/forgot-password
+ */
 router.post(
   "/forgot-password",
+  passwordRecoveryLimiter,
   validationMiddleware(forgotPasswordSchema),
-  authController.forgotPassword
+  authController.forgotPassword,
 );
 
+/**
+ * POST /api/auth/reset-password
+ */
 router.post(
   "/reset-password",
+  passwordRecoveryLimiter,
   validationMiddleware(resetPasswordSchema),
-  authController.resetPassword
+  authController.resetPassword,
 );
 
+/**
+ * POST /api/auth/logout
+ *
+ * Exige JWT válido e adiciona o token atual à blacklist.
+ */
 router.post(
   "/logout",
   authMiddleware,
-  authController.logout
+  authController.logout,
 );
+
+/**
+ * A rota de renovação será habilitada somente depois que
+ * authController.refresh for implementado.
+ *
+ * Não descomente antes disso, pois o Express lançará:
+ * "TypeError: argument handler must be a function".
+ */
+
+// router.post(
+//   "/refresh",
+//   refreshTokenLimiter,
+//   authController.refresh,
+// );
 
 module.exports = router;

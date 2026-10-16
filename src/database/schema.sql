@@ -5,6 +5,7 @@
 -- EXTENSIONS
 -- ============================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ============================================
 -- ENUMS
@@ -27,6 +28,11 @@ EXCEPTION
   WHEN duplicate_object THEN NULL;
 END $$;
 
+DO $$ BEGIN
+  CREATE TYPE status_usuario AS ENUM ('PENDENTE', 'ATIVO', 'SUSPENSO');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 -- ============================================
 -- TABLES
 -- ============================================
@@ -41,6 +47,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
   documento VARCHAR(14) NOT NULL,
   telefone VARCHAR(11) NOT NULL,
   criado_em TIMESTAMP NOT NULL DEFAULT NOW(),
+  status status_usuario NOT NULL DEFAULT 'ATIVO',
 
   CONSTRAINT usuarios_email_unique UNIQUE (email),
   CONSTRAINT usuarios_documento_unique UNIQUE (documento)
@@ -186,6 +193,51 @@ CREATE TABLE IF NOT EXISTS categorias (
 
   CONSTRAINT categorias_nome_unique UNIQUE (nome)
 );
+
+-- Token
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  usuario_id UUID NOT NULL,
+  token_hash VARCHAR(64) NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  revoked_at TIMESTAMPTZ,
+
+  CONSTRAINT fk_refresh_token_usuario
+    FOREIGN KEY (usuario_id)
+    REFERENCES usuarios(id)
+    ON DELETE CASCADE
+);
+
+--Recuperação de Senha
+CREATE TABLE IF NOT EXISTS password_recovery_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  usuario_id UUID NOT NULL,
+  token_hash VARCHAR(64) NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  used_at TIMESTAMPTZ,
+
+  CONSTRAINT fk_password_recovery_usuario
+    FOREIGN KEY (usuario_id)
+    REFERENCES usuarios(id)
+    ON DELETE CASCADE
+);
+
+--Autenticação negada
+CREATE TABLE IF NOT EXISTS revoked_tokens (
+  token TEXT PRIMARY KEY,
+  revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ
+);
+
+--Login
+CREATE TABLE IF NOT EXISTS login_attempts (
+  ip VARCHAR(255) PRIMARY KEY,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  first_attempt BIGINT NOT NULL
+);
+
 
 -- ============================================
 -- INDEXES

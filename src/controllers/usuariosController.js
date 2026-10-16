@@ -130,58 +130,180 @@ const usuariosController = {
   },
 
   // Listar usuários (ADMIN) - paginado, com filtro e busca
-  async listarUsuarios(req, res) {
-    try {
-      const page = Math.max(1, parseInt(req.query.page) || 1);
-      const limit = 20;
-      const offset = (page - 1) * limit;
-      const { tipo_perfil, search } = req.query;
+async criarAdmin(req, res) {
+  try {
+    const {
+      nome_completo,
+      email,
+      senha,
+      documento,
+      telefone,
+    } = req.body;
 
-      // Montar condições dinâmicas
-      let conditions = sql`WHERE 1=1`;
-
-      if (tipo_perfil) {
-        conditions = sql`${conditions} AND tipo_perfil = ${tipo_perfil}`;
-      }
-
-      if (search && search.length >= 3) {
-        const searchPattern = `%${search}%`;
-        conditions = sql`${conditions} AND (nome_completo ILIKE ${searchPattern} OR email ILIKE ${searchPattern})`;
-      }
-
-      // Contar total de registros
-      const countResult = await sql`
-        SELECT COUNT(*)::int AS total FROM usuarios ${conditions}
-      `;
-      const total = countResult[0].total;
-      const totalPages = Math.ceil(total / limit);
-
-      // Buscar usuários paginados
-      const usuarios = await sql`
-        SELECT id, nome_completo, email, tipo_perfil, documento, telefone, criado_em
-        FROM usuarios
-        ${conditions}
-        ORDER BY criado_em DESC
-        LIMIT ${limit} OFFSET ${offset}
-      `;
-
-      // Mascarar documentos
-      const usuariosMascarados = usuarios.map(u => ({
-        ...u,
-        documento: mascararDocumento(u.documento)
-      }));
-
-      return res.status(200).json({
-        data: usuariosMascarados,
-        total,
-        page,
-        totalPages
+    if (
+      !nome_completo ||
+      !email ||
+      !senha ||
+      !documento ||
+      !telefone
+    ) {
+      return res.status(400).json({
+        error: "Preencha todos os campos obrigatórios.",
       });
-    } catch (error) {
-      console.error("Erro ao listar usuários:", error);
-      return res.status(500).json({ error: "Erro interno no servidor ao listar usuários." });
     }
-  },
+
+    if (senha.length < 8) {
+      return res.status(400).json({
+        error: "A senha deve possuir no mínimo 8 caracteres.",
+      });
+    }
+
+    const hasUppercase = /[A-Z]/.test(senha);
+    const hasLowercase = /[a-z]/.test(senha);
+    const hasDigit = /\d/.test(senha);
+
+    if (!hasUppercase || !hasLowercase || !hasDigit) {
+      return res.status(400).json({
+        error:
+          "A senha deve conter letra maiúscula, minúscula e número.",
+      });
+    }
+
+    const senha_hash = await bcrypt.hash(senha, 10);
+
+    const resultado = await sql`
+      INSERT INTO usuarios (
+        id,
+        nome_completo,
+        email,
+        senha_hash,
+        tipo_perfil,
+        documento,
+        telefone,
+        criado_em
+      )
+      VALUES (
+        gen_random_uuid(),
+        ${nome_completo.trim()},
+        ${email.trim().toLowerCase()},
+        ${senha_hash},
+        'ADMIN',
+        ${documento},
+        ${telefone},
+        NOW()
+      )
+      RETURNING
+        id,
+        nome_completo,
+        email,
+        tipo_perfil,
+        documento,
+        telefone,
+        criado_em
+    `;
+
+    return res.status(201).json({
+      message: "Administrador cadastrado com sucesso.",
+      usuario: resultado[0],
+    });
+  } catch (error) {
+    if (error.code === "23505") {
+      return res.status(409).json({
+        error: "E-mail ou documento já cadastrado.",
+      });
+    }
+
+    console.error("Erro ao criar administrador:", error);
+
+    return res.status(500).json({
+      error: "Erro interno ao criar administrador.",
+    });
+  }
+},
+
+/**
+ * GET /api/usuarios
+ * Lista usuários para administradores.
+ *
+ * Query params:
+ * - page: página atual
+ * - tipo_perfil: CONSUMIDOR, CACAMBEIRO ou ADMIN
+ * - search: busca por nome ou e-mail
+ */
+async listarUsuarios(req, res) {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = 20;
+    const offset = (page - 1) * limit;
+
+    const tipoPerfil = req.query.tipo_perfil;
+    const search = req.query.search?.trim();
+
+    let conditions = sql`WHERE 1 = 1`;
+
+    if (tipoPerfil) {
+      conditions = sql`
+        ${conditions}
+        AND tipo_perfil = ${tipoPerfil}
+      `;
+    }
+
+    if (search && search.length >= 3) {
+      const searchPattern = `%${search}%`;
+
+      conditions = sql`
+        ${conditions}
+        AND (
+          nome_completo ILIKE ${searchPattern}
+          OR email ILIKE ${searchPattern}
+        )
+      `;
+    }
+
+    const countResult = await sql`
+      SELECT COUNT(*)::int AS total
+      FROM usuarios
+      ${conditions}
+    `;
+
+    const total = countResult[0].total;
+    const totalPages = Math.ceil(total / limit);
+
+    const usuarios = await sql`
+      SELECT
+        id,
+        nome_completo,
+        email,
+        tipo_perfil,
+        documento,
+        telefone,
+        criado_em
+      FROM usuarios
+      ${conditions}
+      ORDER BY criado_em DESC
+      LIMIT ${limit}
+      OFFSET ${offset}
+    `;
+
+    const usuariosMascarados = usuarios.map((usuario) => ({
+      ...usuario,
+      doc: mascararDocumento(usuario.doc),
+    }));
+
+    return res.status(200).json({
+      data: usuariosMascarados,
+      total,
+      page,
+      totalPages,
+    });
+  } catch (error) {
+    console.error("Erro ao listar usuários:", error);
+
+    return res.status(500).json({
+      error: "Erro interno no servidor ao listar usuários.",
+    });
+  }
+},
 
   // Detalhe de usuário (ADMIN) - com endereços e histórico de pedidos
   async detalheUsuario(req, res) {
