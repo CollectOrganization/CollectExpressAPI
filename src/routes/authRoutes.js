@@ -282,7 +282,7 @@ const resetPasswordSchema = {
   token: {
     required: true,
     type: "string",
-    minLength: 1,
+    minLength: 20,
     maxLength: 256,
   },
   nova_senha: {

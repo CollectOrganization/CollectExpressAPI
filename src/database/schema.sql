@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
   documento VARCHAR(14) NOT NULL,
   telefone VARCHAR(11) NOT NULL,
   criado_em TIMESTAMP NOT NULL DEFAULT NOW(),
+  token_version INTEGER NOT NULL DEFAULT 0,
   status status_usuario NOT NULL DEFAULT 'ATIVO',
 
   CONSTRAINT usuarios_email_unique UNIQUE (email),

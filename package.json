@@ -9,6 +9,7 @@
     "seed": "node src/scripts/seed.js",
     "migrate": "node src/scripts/hardeningMigration.js",
     "migrate:security": "node src/scripts/securityMigration.js",
+    "migrate:password": "node src/scripts/passwordRecoveryMigration.js",
     "test": "jest",
     "test:watch": "jest --watch"
   },

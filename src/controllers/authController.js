@@ -20,6 +20,11 @@ const {
   getClientIp,
 } = require("../middlewares/rateLimitMiddleware");
 
+const {
+  createPasswordRecovery,
+  resetPassword: persistPasswordReset,
+} = require("../services/passwordRecoveryService");
+
 /**
  * Armazenamento temporário dos tokens de recuperação de senha.
  *
@@ -426,68 +431,40 @@ const authController = {
    */
   async forgotPassword(req, res) {
     try {
-      const { email } = req.body;
+      const result = await createPasswordRecovery(
+        req.body.email,
+      );
 
-      const emailNormalizado = email.trim().toLowerCase();
+      const response = {
+        success: true,
+        message:
+          "Se o email estiver cadastrado, você receberá instruções de recuperação.",
+        data: null,
+      };
 
-      const successMessage =
-        "Se o email estiver cadastrado, você receberá instruções de recuperação";
-
-      const usuarios = await sql`
-        SELECT id
-        FROM usuarios
-        WHERE LOWER(email) = ${emailNormalizado}
-      `;
-
-      const usuario = usuarios[0];
-
-      if (usuario) {
-        /**
-         * Remove tokens anteriores desse usuário.
-         * Assim, apenas o token mais recente permanece válido.
-         */
-        for (const [key, entry] of recoveryTokens.entries()) {
-          if (entry.usuario_id === usuario.id) {
-            recoveryTokens.delete(key);
-          }
-        }
-
-        const token = crypto
-          .randomBytes(32)
-          .toString("hex");
-
-        const expiresAt = new Date(
-          Date.now() + 15 * 60 * 1000,
-        );
-
-        recoveryTokens.set(token, {
-          token,
-          usuario_id: usuario.id,
-          expires_at: expiresAt,
-          used: false,
-        });
-
-        /**
-         * Temporário para ambiente acadêmico.
-         *
-         * Em produção, o token deverá ser enviado por e-mail
-         * e jamais exibido em logs.
-         */
-        if (process.env.NODE_ENV !== "production") {
-          console.log(
-            `Token de recuperação para ${emailNormalizado}: ${token}`,
-          );
-        }
+      /**
+       * Somente para desenvolvimento acadêmico.
+       * Em produção, o token deverá ser enviado por e-mail.
+       */
+      if (
+        result &&
+        process.env.EXPOSE_RECOVERY_TOKEN === "true" &&
+        process.env.NODE_ENV !== "production"
+      ) {
+        response.data = {
+          recovery_token: result.token,
+          expires_at: result.expiresAt,
+        };
       }
 
-      return res.status(200).json({
-        message: successMessage,
-      });
+      return res.status(200).json(response);
     } catch (error) {
       console.error("Erro no forgot-password:", error);
 
       return res.status(500).json({
-        error: "Erro interno no servidor",
+        success: false,
+        message: "Erro interno no servidor.",
+        code: "INTERNAL_SERVER_ERROR",
       });
     }
   },
@@ -501,31 +478,6 @@ const authController = {
     try {
       const { token, nova_senha } = req.body;
 
-      const tokenEntry = recoveryTokens.get(token);
-
-      /**
-       * Verifica se:
-       * - o token existe;
-       * - ainda não foi usado;
-       * - não está expirado.
-       */
-      if (
-        !tokenEntry ||
-        tokenEntry.used ||
-        new Date() > tokenEntry.expires_at
-      ) {
-        return res.status(400).json({
-          error: "Token inválido ou expirado",
-        });
-      }
-
-      /**
-       * Política de senha:
-       * - mínimo de 8 caracteres;
-       * - uma letra maiúscula;
-       * - uma letra minúscula;
-       * - um número.
-       */
       const hasUppercase = /[A-Z]/.test(nova_senha);
       const hasLowercase = /[a-z]/.test(nova_senha);
       const hasDigit = /\d/.test(nova_senha);
@@ -537,43 +489,38 @@ const authController = {
         !hasDigit
       ) {
         return res.status(400).json({
-          error:
-            "A senha deve ter no mínimo 8 caracteres, uma letra maiúscula, uma minúscula e um dígito",
+          success: false,
+          message:
+            "A senha deve ter no mínimo 8 caracteres, uma letra maiúscula, uma minúscula e um número.",
+          code: "WEAK_PASSWORD",
         });
       }
 
-      const senhaHash = await bcrypt.hash(
-        nova_senha,
-        10,
-      );
+      const changed = await persistPasswordReset({
+        token,
+        newPassword: nova_senha,
+      });
 
-      await sql`
-        UPDATE usuarios
-        SET senha_hash = ${senhaHash}
-        WHERE id = ${tokenEntry.usuario_id}
-      `;
-
-      // Marca o token atual como utilizado.
-      tokenEntry.used = true;
-
-      // Remove qualquer outro token do mesmo usuário.
-      for (const [key, entry] of recoveryTokens.entries()) {
-        if (
-          entry.usuario_id === tokenEntry.usuario_id &&
-          key !== token
-        ) {
-          recoveryTokens.delete(key);
-        }
+      if (!changed) {
+        return res.status(400).json({
+          success: false,
+          message: "Token inválido, expirado ou já utilizado.",
+          code: "INVALID_RECOVERY_TOKEN",
+        });
       }
 
       return res.status(200).json({
-        message: "Senha atualizada com sucesso",
+        success: true,
+        message: "Senha atualizada com sucesso.",
+        data: null,
       });
     } catch (error) {
       console.error("Erro no reset-password:", error);
 
       return res.status(500).json({
-        error: "Erro interno no servidor",
+        success: false,
+        message: "Erro interno no servidor.",
+        code: "INTERNAL_SERVER_ERROR",
       });
     }
   },
