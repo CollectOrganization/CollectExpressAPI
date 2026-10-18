@@ -2,132 +2,268 @@ const sql = require("../config/db");
 
 const alugueisController = {
   /**
-   * POST /api/alugueis/checkout
-   * Finaliza o carrinho criando um pedido de aluguel.
-   * Body: { endereco_id, data_inicio (YYYY-MM-DD) }
-   * dias_aluguel é calculado a partir dos itens individuais do carrinho.
-   */
+ * POST /api/alugueis/checkout
+ *
+ * Finaliza o carrinho de forma atômica:
+ * - valida endereço;
+ * - valida carrinho;
+ * - valida disponibilidade e fornecedor;
+ * - cria pedido;
+ * - cria itens;
+ * - remove carrinho.
+ *
+ * Se qualquer operação falhar, nenhuma alteração é persistida.
+ */
   async checkout(req, res) {
     try {
-      const consumidor_id = req.usuario_id;
+      const consumidorId = req.usuario_id;
       const { endereco_id, data_inicio } = req.body;
 
-      // 1. Verificar se o carrinho existe e não está vazio
-      const carrinhoRows = await sql`
-        SELECT id, cacambeiro_id
-        FROM carrinho
-        WHERE consumidor_id = ${consumidor_id}
-      `;
-
-      if (carrinhoRows.length === 0) {
-        return res.status(400).json({ error: "O carrinho está vazio" });
+      // 1. Validação complementar dos campos.
+      if (!endereco_id || !data_inicio) {
+        return res.status(400).json({
+          success: false,
+          message: "Endereço e data de início são obrigatórios.",
+          code: "REQUIRED_FIELDS",
+        });
       }
 
-      const carrinho_id = carrinhoRows[0].id;
-      const cacambeiro_id = carrinhoRows[0].cacambeiro_id;
-
-      // Verificar se há itens no carrinho
-      const itensCarrinho = await sql`
-        SELECT ic.id, ic.cacamba_id, ic.quantidade, ic.dias_aluguel,
-               c.preco_diaria
-        FROM itens_carrinho ic
-        JOIN cacambas c ON c.id = ic.cacamba_id
-        WHERE ic.carrinho_id = ${carrinho_id}
-      `;
-
-      if (itensCarrinho.length === 0) {
-        return res.status(400).json({ error: "O carrinho está vazio" });
+      // Evita que datas inválidas, como 2026-99-99, sejam aceitas.
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data_inicio)) {
+        return res.status(400).json({
+          success: false,
+          message: "A data deve usar o formato YYYY-MM-DD.",
+          code: "INVALID_START_DATE",
+        });
       }
 
-      // 2. Validar campos obrigatórios
-      if (!endereco_id) {
-        return res.status(400).json({ error: "O campo 'endereco_id' é obrigatório" });
-      }
+      // A inclusão de T00:00:00 evita conversões indesejadas de fuso.
+      const dataInicio = new Date(`${data_inicio}T00:00:00`);
 
-      // Validar data_inicio (1-60 dias a partir de hoje)
-      if (!data_inicio) {
-        return res.status(400).json({ error: "O campo 'data_inicio' deve ser entre 1 e 60 dias a partir de hoje" });
+      if (Number.isNaN(dataInicio.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: "Data de início inválida.",
+          code: "INVALID_START_DATE",
+        });
       }
 
       const hoje = new Date();
       hoje.setHours(0, 0, 0, 0);
-      const dataInicio = new Date(data_inicio + "T00:00:00");
 
-      if (isNaN(dataInicio.getTime())) {
-        return res.status(400).json({ error: "O campo 'data_inicio' deve ser entre 1 e 60 dias a partir de hoje" });
+      const diferencaDias = Math.round(
+        (dataInicio.getTime() - hoje.getTime()) /
+          (1000 * 60 * 60 * 24),
+      );
+
+      if (diferencaDias < 1 || diferencaDias > 60) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "A data de início deve estar entre 1 e 60 dias a partir de hoje.",
+          code: "INVALID_START_DATE",
+        });
       }
 
-      const diffTime = dataInicio.getTime() - hoje.getTime();
-      const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-
-      if (diffDays < 1 || diffDays > 60) {
-        return res.status(400).json({ error: "O campo 'data_inicio' deve ser entre 1 e 60 dias a partir de hoje" });
-      }
-
-      // 3. Validar que o endereço pertence ao consumidor
-      const enderecoRows = await sql`
-        SELECT id FROM enderecos
-        WHERE id = ${endereco_id} AND usuario_id = ${consumidor_id}
+      // 2. Verifica se o endereço pertence ao consumidor autenticado.
+      const enderecos = await sql`
+        SELECT id
+        FROM enderecos
+        WHERE id = ${endereco_id}
+          AND usuario_id = ${consumidorId}
       `;
 
-      if (enderecoRows.length === 0) {
-        return res.status(404).json({ error: "Endereço não encontrado" });
+      if (enderecos.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Endereço não encontrado.",
+          code: "ADDRESS_NOT_FOUND",
+        });
       }
 
-      // 4. Buscar taxa_entrega do cacambeiro
-      const detalhesRows = await sql`
-        SELECT taxa_entrega FROM detalhes_cacambeiro
-        WHERE usuario_id = ${cacambeiro_id}
+      // 3. Localiza o carrinho do consumidor.
+      const carrinhos = await sql`
+        SELECT id, cacambeiro_id
+        FROM carrinho
+        WHERE consumidor_id = ${consumidorId}
       `;
 
-      const taxa_entrega = detalhesRows.length > 0 ? Number(detalhesRows[0].taxa_entrega) : 0;
+      if (carrinhos.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "O carrinho está vazio.",
+          code: "EMPTY_CART",
+        });
+      }
 
-      // 5. Calcular preco_final usando dias_aluguel individual de cada item
-      // Fórmula: sum(quantidade × dias_aluguel_do_item × preco_diaria) + taxa_entrega
-      let totalItens = 0;
-      let maxDiasAluguel = 0;
-      itensCarrinho.forEach(item => {
-        totalItens += item.quantidade * item.dias_aluguel * Number(item.preco_diaria);
-        if (item.dias_aluguel > maxDiasAluguel) {
-          maxDiasAluguel = item.dias_aluguel;
-        }
-      });
+      const carrinhoId = carrinhos[0].id;
+      const cacambeiroId = carrinhos[0].cacambeiro_id;
 
-      const preco_final = totalItens + taxa_entrega;
+      /*
+      * 4. Executa o checkout em uma única instrução SQL.
+      *
+      * Todas as operações abaixo fazem parte da mesma transação
+      * implícita do PostgreSQL. Se qualquer CTE falhar, tudo será
+      * revertido automaticamente.
+      */
+      const pedidos = await sql`
+        WITH itens_validos AS (
+          SELECT
+            ic.cacamba_id,
+            ic.quantidade,
+            ic.dias_aluguel,
+            c.preco_diaria,
+            c.disponivel,
+            c.cacambeiro_id
+          FROM itens_carrinho ic
+          INNER JOIN cacambas c
+            ON c.id = ic.cacamba_id
+          WHERE ic.carrinho_id = ${carrinhoId}
+        ),
 
-      // 6. Criar registro de aluguel (dias_aluguel = maior período entre os itens, para referência)
-      const novoPedido = await sql`
-        INSERT INTO alugueis (
-          id, consumidor_id, cacambeiro_id, endereco_id, data_pedido, data_inicio,
-          dias_aluguel, preco_final, status_pagamento, status_aluguel
-        ) VALUES (
-          gen_random_uuid(), ${consumidor_id}, ${cacambeiro_id}, ${endereco_id},
-          NOW(), ${data_inicio}, ${maxDiasAluguel}, ${preco_final},
-          'PENDENTE', 'AGUARDANDO_ENTREGA'
+        resumo AS (
+          SELECT
+            COUNT(*)::int AS quantidade_itens,
+
+            COALESCE(
+              SUM(
+                quantidade *
+                dias_aluguel *
+                preco_diaria
+              ),
+              0
+            )::numeric AS total_itens,
+
+            MAX(dias_aluguel)::int AS max_dias,
+
+            COUNT(*) FILTER (
+              WHERE disponivel = FALSE
+                OR cacambeiro_id <> ${cacambeiroId}
+            )::int AS itens_invalidos
+          FROM itens_validos
+        ),
+
+        novo_pedido AS (
+          INSERT INTO alugueis (
+            id,
+            consumidor_id,
+            cacambeiro_id,
+            endereco_id,
+            data_pedido,
+            data_inicio,
+            dias_aluguel,
+            preco_final,
+            status_pagamento,
+            status_aluguel
+          )
+          SELECT
+            gen_random_uuid(),
+            ${consumidorId},
+            ${cacambeiroId},
+            ${endereco_id},
+            NOW(),
+            ${data_inicio}::date,
+            resumo.max_dias,
+
+            resumo.total_itens +
+            COALESCE(
+              (
+                SELECT taxa_entrega
+                FROM detalhes_cacambeiro
+                WHERE usuario_id = ${cacambeiroId}
+              ),
+              0
+            ),
+
+            'PENDENTE',
+            'AGUARDANDO_ENTREGA'
+          FROM resumo
+          WHERE resumo.quantidade_itens > 0
+            AND resumo.itens_invalidos = 0
+          RETURNING *
+        ),
+
+        novos_itens AS (
+          INSERT INTO itens_aluguel (
+            id,
+            aluguel_id,
+            cacamba_id,
+            quantidade,
+            dias_aluguel,
+            preco_diaria
+          )
+          SELECT
+            gen_random_uuid(),
+            novo_pedido.id,
+            itens_validos.cacamba_id,
+            itens_validos.quantidade,
+            itens_validos.dias_aluguel,
+            itens_validos.preco_diaria
+          FROM itens_validos
+          CROSS JOIN novo_pedido
+          RETURNING id
+        ),
+
+        carrinho_removido AS (
+          DELETE FROM carrinho
+          WHERE id = ${carrinhoId}
+
+            -- Só remove depois que o pedido foi criado.
+            AND EXISTS (
+              SELECT 1
+              FROM novo_pedido
+            )
+
+            -- Confirma que todos os itens foram criados.
+            AND (
+              SELECT COUNT(*)::int
+              FROM novos_itens
+            ) = (
+              SELECT quantidade_itens
+              FROM resumo
+            )
+
+          /*
+          * Os itens do carrinho serão removidos automaticamente
+          * pelo ON DELETE CASCADE da chave estrangeira.
+          */
+          RETURNING id
         )
-        RETURNING *
+
+        SELECT novo_pedido.*
+        FROM novo_pedido
+        WHERE EXISTS (
+          SELECT 1
+          FROM carrinho_removido
+        )
       `;
 
-      const aluguel_id = novoPedido[0].id;
-
-      // 7. Criar itens_aluguel para cada item do carrinho (com dias_aluguel individual)
-      for (const item of itensCarrinho) {
-        await sql`
-          INSERT INTO itens_aluguel (id, aluguel_id, cacamba_id, quantidade, dias_aluguel, preco_diaria)
-          VALUES (gen_random_uuid(), ${aluguel_id}, ${item.cacamba_id}, ${item.quantidade}, ${item.dias_aluguel}, ${item.preco_diaria})
-        `;
+      /*
+      * Se não houve resultado, o carrinho estava sem itens válidos,
+      * continha caçamba indisponível ou de outro fornecedor.
+      */
+      if (pedidos.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Não foi possível concluir o pedido. Verifique a disponibilidade e os itens do carrinho.",
+          code: "CHECKOUT_FAILED",
+        });
       }
 
-      // 8. Limpar o carrinho
-      await sql`DELETE FROM itens_carrinho WHERE carrinho_id = ${carrinho_id}`;
-      await sql`DELETE FROM carrinho WHERE id = ${carrinho_id}`;
-
-      // 9. Retornar o pedido criado
-      return res.status(201).json(novoPedido[0]);
-
+      return res.status(201).json({
+        success: true,
+        message: "Pedido criado com sucesso.",
+        data: pedidos[0],
+      });
     } catch (error) {
       console.error("Erro no checkout:", error);
-      return res.status(500).json({ error: "Erro interno ao processar o pedido." });
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno ao processar o pedido.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
     }
   },
 
