@@ -9,6 +9,13 @@ require("dotenv").config();
  *   const sql = require('./db');
  *   const users = await sql`SELECT * FROM usuarios WHERE id = ${userId}`;
  */
-const sql = neon(process.env.DATABASE_URL);
+let sql;
+if (process.env.DATABASE_URL) {
+  sql = neon(process.env.DATABASE_URL);
+} else {
+  sql = async () => {
+    throw new Error("DATABASE_URL não configurada no .env");
+  };
+}
 
 module.exports = sql;
