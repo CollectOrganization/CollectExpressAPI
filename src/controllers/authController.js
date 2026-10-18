@@ -1,237 +1,578 @@
 const sql = require("../config/db");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
+
+/* vai ser centralizado no tokenservice.js agora
+const jwt = require("jsonwebtoken");*/
+
+const {
+  createAccessToken,
+  createRefreshToken,
+  rotateRefreshToken,
+  revokeRefreshToken,
+  revokeAccessToken,
+} = require("../services/tokenService");
+
 const crypto = require("crypto");
-const { recordFailedAttempt, resetAttempts, getClientIp } = require("../middlewares/rateLimitMiddleware");
+
+const {
+  recordFailedAttempt,
+  resetAttempts,
+  getClientIp,
+} = require("../middlewares/rateLimitMiddleware");
+
+const {
+  createPasswordRecovery,
+  resetPassword: persistPasswordReset,
+} = require("../services/passwordRecoveryService");
 
 /**
- * In-memory store for password recovery tokens.
- * Structure: Map<string, { token, usuario_id, expires_at, used }>
+ * Armazenamento temporário dos tokens de recuperação de senha.
+ *
+ * Importante:
+ * - Os tokens serão perdidos quando a API for reiniciada.
+ * - Em produção, eles deverão ser armazenados no banco de dados.
+ *
+ * Estrutura:
+ * Map<string, {
+ *   token,
+ *   usuario_id,
+ *   expires_at,
+ *   used
+ * }>
  */
 const recoveryTokens = new Map();
 
 const authController = {
   /**
    * POST /api/auth/register
-   * Registra um novo usuário (CONSUMIDOR ou CACAMBEIRO).
-   * Para CACAMBEIRO, também insere detalhes de negócio em detalhes_cacambeiro.
+   *
+   * Registra:
+   * - CONSUMIDOR
+   * - CACAMBEIRO
+   *
+   * Para um CACAMBEIRO, também cria o registro em
+   * detalhes_cacambeiro.
    */
   async register(req, res) {
     try {
-      const { nome_completo, email, senha, tipo_perfil, documento, telefone } = req.body;
+      const {
+        nome_completo,
+        email,
+        senha,
+        tipo_perfil,
+        documento,
+        telefone,
+      } = req.body;
 
-      // Hash da senha com salt factor 10
-      const senha_hash = await bcrypt.hash(senha, 10);
+      /**
+       * Normaliza os dados antes de salvar.
+       *
+       * Isso evita cadastrar e-mails como:
+       * Usuario@Email.com
+       * usuario@email.com
+       *
+       * como se fossem contas diferentes.
+       */
+      const nomeNormalizado = nome_completo.trim();
+      const emailNormalizado = email.trim().toLowerCase();
+      const documentoNormalizado = documento.replace(/\D/g, "");
+      const telefoneNormalizado = telefone.replace(/\D/g, "");
 
-      // Inserir usuário na tabela usuarios
+      /**
+       * Defesa adicional:
+       * o cadastro público só permite CONSUMIDOR e CACAMBEIRO.
+       *
+       * Mesmo que a validação da rota seja removida ou alterada,
+       * não será possível criar um ADMIN por este controller.
+       */
+      if (
+        tipo_perfil !== "CONSUMIDOR" &&
+        tipo_perfil !== "CACAMBEIRO"
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: "Tipo de perfil não permitido no cadastro público.",
+          code: "PROFILE_NOT_ALLOWED",
+        });
+      }
+
+      /**
+       * Status inicial:
+       *
+       * - Consumidor pode acessar imediatamente;
+       * - Caçambeiro precisa ser aprovado por um administrador.
+       */
+      const statusUsuario =
+        tipo_perfil === "CACAMBEIRO"
+          ? "PENDENTE"
+          : "ATIVO";
+
+      // Gera o hash seguro da senha com fator de custo 10.
+      const senhaHash = await bcrypt.hash(senha, 10);
+
+      /**
+       * Insere o usuário.
+       *
+       * Atenção: usamos emailNormalizado, e não o email original.
+       */
       const resultado = await sql`
-        INSERT INTO usuarios (nome_completo, email, senha_hash, tipo_perfil, documento, telefone)
-        VALUES (${nome_completo}, ${email}, ${senha_hash}, ${tipo_perfil}, ${documento}, ${telefone})
-        RETURNING id, nome_completo, email, tipo_perfil, documento, telefone, criado_em
-      `;
+      INSERT INTO usuarios (
+        nome_completo,
+        email,
+        senha_hash,
+        tipo_perfil,
+        documento,
+        telefone,
+        status
+      )
+      VALUES (
+        ${nomeNormalizado},
+        ${emailNormalizado},
+        ${senhaHash},
+        ${tipo_perfil},
+        ${documentoNormalizado},
+        ${telefoneNormalizado},
+        ${statusUsuario}
+      )
+      RETURNING
+        id,
+        nome_completo,
+        email,
+        tipo_perfil,
+        documento,
+        telefone,
+        status,
+        criado_em
+    `;
 
       const usuario = resultado[0];
 
-      // Se CACAMBEIRO, inserir detalhes de negócio
+      /**
+       * Se for um fornecedor de caçambas, salva também os
+       * dados específicos do negócio.
+       */
+      if (
+        tipo_perfil !== "CONSUMIDOR" &&
+        tipo_perfil !== "CACAMBEIRO"
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: "Tipo de perfil não permitido no cadastro público.",
+          code: "PROFILE_NOT_ALLOWED",
+        });
+      }
+
       if (tipo_perfil === "CACAMBEIRO") {
-        const { horario_inicio, horario_fim, raio_entrega_km, taxa_entrega } = req.body;
+        const {
+          horario_inicio,
+          horario_fim,
+          raio_entrega_km,
+          taxa_entrega,
+        } = req.body;
 
         await sql`
-          INSERT INTO detalhes_cacambeiro (usuario_id, horario_inicio, horario_fim, raio_entrega_km, taxa_entrega)
-          VALUES (${usuario.id}, ${horario_inicio}, ${horario_fim}, ${raio_entrega_km}, ${taxa_entrega})
+          INSERT INTO detalhes_cacambeiro (
+            usuario_id,
+            horario_inicio,
+            horario_fim,
+            raio_entrega_km,
+            taxa_entrega
+          )
+          VALUES (
+            ${usuario.id},
+            ${horario_inicio},
+            ${horario_fim},
+            ${raio_entrega_km},
+            ${taxa_entrega}
+          )
         `;
       }
 
       return res.status(201).json(usuario);
     } catch (error) {
-      // Tratar violação de constraint unique (código PostgreSQL 23505)
+      /**
+       * Código 23505:
+       * violação de uma restrição UNIQUE do PostgreSQL.
+       */
       if (error.code === "23505") {
-        if (error.constraint && error.constraint.includes("email")) {
-          return res.status(409).json({ error: "Email já cadastrado" });
+        if (
+          error.constraint &&
+          error.constraint.includes("email")
+        ) {
+          return res.status(409).json({
+            error: "Email já cadastrado",
+          });
         }
-        if (error.constraint && error.constraint.includes("documento")) {
-          return res.status(409).json({ error: "Documento já cadastrado" });
+
+        if (
+          error.constraint &&
+          error.constraint.includes("documento")
+        ) {
+          return res.status(409).json({
+            error: "Documento já cadastrado",
+          });
         }
-        // Fallback para constraint genérica
+
+        // Fallback caso o nome da constraint não esteja disponível.
         if (error.detail && error.detail.includes("email")) {
-          return res.status(409).json({ error: "Email já cadastrado" });
+          return res.status(409).json({
+            error: "Email já cadastrado",
+          });
         }
-        if (error.detail && error.detail.includes("documento")) {
-          return res.status(409).json({ error: "Documento já cadastrado" });
+
+        if (
+          error.detail &&
+          error.detail.includes("documento")
+        ) {
+          return res.status(409).json({
+            error: "Documento já cadastrado",
+          });
         }
-        return res.status(409).json({ error: "Registro duplicado" });
+
+        return res.status(409).json({
+          error: "Registro duplicado",
+        });
       }
 
       console.error("Erro no registro:", error);
-      return res.status(500).json({ error: "Erro interno no servidor ao tentar realizar o registro." });
+
+      return res.status(500).json({
+        error:
+          "Erro interno no servidor ao tentar realizar o registro.",
+      });
     }
   },
 
+  /**
+   * POST /api/auth/login
+   *
+   * Autentica CONSUMIDOR, CACAMBEIRO ou ADMIN.
+   * Retorna um access token de curta duração e um refresh token.
+   */
   async login(req, res) {
     try {
       const { email, senha } = req.body;
       const ip = getClientIp(req);
 
-      // 1. Buscar usuário pelo e-mail
-      const usuarios = await sql`SELECT * FROM usuarios WHERE email = ${email}`;
+      // Defesa adicional, mesmo existindo validationMiddleware.
+      if (
+        typeof email !== "string" ||
+        typeof senha !== "string"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "E-mail e senha são obrigatórios.",
+          code: "VALIDATION_ERROR",
+        });
+      }
+
+      // Normaliza o e-mail para evitar diferenças por caixa e espaços.
+      const emailNormalizado = email.trim().toLowerCase();
+
+      const usuarios = await sql`
+        SELECT
+          id,
+          nome_completo,
+          email,
+          senha_hash,
+          tipo_perfil,
+          status
+        FROM usuarios
+        WHERE LOWER(email) = ${emailNormalizado}
+        LIMIT 1
+      `;
+
       const usuario = usuarios[0];
 
+      /*
+      * A mesma resposta é utilizada para usuário inexistente e senha
+      * incorreta, evitando revelar quais e-mails estão cadastrados.
+      */
       if (!usuario) {
-        recordFailedAttempt(ip);
-        return res.status(401).json({ error: "Credenciais inválidas" });
+        await recordFailedAttempt(ip);
+
+        return res.status(401).json({
+          success: false,
+          message: "Credenciais inválidas.",
+          code: "INVALID_CREDENTIALS",
+        });
       }
 
-      // 2. Comparar a senha enviada com o hash salvo no banco
-      const senhaValida = await bcrypt.compare(senha, usuario.senha_hash);
+      // A senha é conferida antes de revelar o status da conta.
+      const senhaValida = await bcrypt.compare(
+        senha,
+        usuario.senha_hash,
+      );
 
       if (!senhaValida) {
-        recordFailedAttempt(ip);
-        return res.status(401).json({ error: "Credenciais inválidas" });
+        await recordFailedAttempt(ip);
+
+        return res.status(401).json({
+          success: false,
+          message: "Credenciais inválidas.",
+          code: "INVALID_CREDENTIALS",
+        });
       }
 
-      // 3. Login bem-sucedido: limpar tentativas de rate limit
-      resetAttempts(ip);
+      // Impede que contas ainda não aprovadas iniciem uma sessão.
+      if (usuario.status === "PENDENTE") {
+        return res.status(403).json({
+          success: false,
+          message: "Seu cadastro ainda está aguardando aprovação.",
+          code: "USER_PENDING",
+        });
+      }
 
-      // 4. Gerar o Token JWT com id e tipo_perfil no payload, expira em 24h
-      const payload = {
-        id: usuario.id,
-        tipo_perfil: usuario.tipo_perfil
-      };
+      // Impede login de contas suspensas.
+      if (usuario.status === "SUSPENSO") {
+        return res.status(403).json({
+          success: false,
+          message: "Sua conta está suspensa.",
+          code: "USER_SUSPENDED",
+        });
+      }
 
-      const token = jwt.sign(payload, process.env.JWT_SECRET, {
-        expiresIn: "10m"
-      });
+      /*
+      * Proteção para valores inesperados ou registros antigos sem
+      * status válido.
+      */
+      if (usuario.status !== "ATIVO") {
+        return res.status(403).json({
+          success: false,
+          message: "Sua conta não está disponível para acesso.",
+          code: "USER_INACTIVE",
+        });
+      }
 
-      // Retornamos o token e os dados básicos do usuário (sem a senha)
+      // Login válido: remove tentativas anteriores associadas ao IP.
+      await resetAttempts(ip);
+
+      /*
+      * Access token:
+      * - usado no header Authorization;
+      * - possui duração curta;
+      * - contém id e perfil.
+      */
+      const accessToken = createAccessToken(usuario);
+
+      /*
+      * Refresh token:
+      * - possui duração maior;
+      * - permite renovar a sessão;
+      * - somente seu hash é armazenado no banco.
+      */
+      const refresh = await createRefreshToken(usuario.id);
+
+      // Nunca retornar senha_hash.
       return res.status(200).json({
-        token,
-        usuario: {
-          id: usuario.id,
-          nome_completo: usuario.nome_completo,
-          tipo_perfil: usuario.tipo_perfil
-        }
+        success: true,
+        data: {
+          access_token: accessToken,
+          refresh_token: refresh.refreshToken,
+          token_type: "Bearer",
+          expires_in: process.env.JWT_EXPIRES_IN || "15m",
+          refresh_expires_at: refresh.expiresAt.toISOString(),
+          usuario: {
+            id: usuario.id,
+            nome_completo: usuario.nome_completo,
+            email: usuario.email,
+            tipo_perfil: usuario.tipo_perfil,
+            status: usuario.status,
+          },
+        },
       });
-
     } catch (error) {
       console.error("Erro no login:", error);
-      return res.status(500).json({ error: "Erro interno no servidor" });
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno no servidor.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
     }
   },
 
+  /**
+   * POST /api/auth/logout
+   *
+   * Adiciona o JWT atual à lista de tokens revogados.
+   * Requer authMiddleware.
+   */
   async logout(req, res) {
     try {
-      const token = req.token;
-      if (token) {
-        await sql`INSERT INTO revoked_tokens (token, revoked_at) VALUES (${token}, NOW()) ON CONFLICT DO NOTHING`;
-      }
-      return res.status(200).json({ message: "Logout realizado com sucesso" });
+      const { refresh_token } = req.body;
+
+      await revokeAccessToken(req.token);
+      await revokeRefreshToken(refresh_token);
+
+      return res.status(200).json({
+        success: true,
+        message: "Logout realizado com sucesso.",
+        data: null,
+      });
     } catch (error) {
       console.error("Erro no logout:", error);
-      return res.status(500).json({ error: "Erro interno no servidor" });
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno no servidor.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
     }
   },
 
   /**
    * POST /api/auth/forgot-password
-   * Generates a single-use recovery token (15 min expiry).
-   * Always returns success regardless of whether the email exists.
+   *
+   * Gera um token de recuperação com validade de 15 minutos.
+   *
+   * A resposta é sempre igual, independentemente de o e-mail
+   * existir, evitando revelar quais contas estão cadastradas.
    */
   async forgotPassword(req, res) {
     try {
-      const { email } = req.body;
+      const result = await createPasswordRecovery(
+        req.body.email,
+      );
 
-      // Always return the same response to avoid leaking email existence
-      const successMessage = "Se o email estiver cadastrado, você receberá instruções de recuperação";
+      const response = {
+        success: true,
+        message:
+          "Se o email estiver cadastrado, você receberá instruções de recuperação.",
+        data: null,
+      };
 
-      // Look up user by email
-      const usuarios = await sql`SELECT id FROM usuarios WHERE email = ${email}`;
-      const usuario = usuarios[0];
-
-      if (usuario) {
-        // Invalidate any previous tokens for this user
-        for (const [key, entry] of recoveryTokens.entries()) {
-          if (entry.usuario_id === usuario.id) {
-            recoveryTokens.delete(key);
-          }
-        }
-
-        // Generate a new recovery token
-        const token = crypto.randomBytes(32).toString("hex");
-        const expires_at = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
-
-        recoveryTokens.set(token, {
-          token,
-          usuario_id: usuario.id,
-          expires_at,
-          used: false
-        });
+      /**
+       * Somente para desenvolvimento acadêmico.
+       * Em produção, o token deverá ser enviado por e-mail.
+       */
+      if (
+        result &&
+        process.env.EXPOSE_RECOVERY_TOKEN === "true" &&
+        process.env.NODE_ENV !== "production"
+      ) {
+        response.data = {
+          recovery_token: result.token,
+          expires_at: result.expiresAt,
+        };
       }
 
-      return res.status(200).json({ message: successMessage });
+      return res.status(200).json(response);
     } catch (error) {
       console.error("Erro no forgot-password:", error);
-      return res.status(500).json({ error: "Erro interno no servidor" });
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno no servidor.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
     }
   },
 
   /**
    * POST /api/auth/reset-password
-   * Validates recovery token, enforces password policy, updates hash,
-   * invalidates token, and terminates sessions.
+   *
+   * Valida o token de recuperação e atualiza a senha.
    */
   async resetPassword(req, res) {
     try {
       const { token, nova_senha } = req.body;
 
-      // Validate token exists, is not expired, and hasn't been used
-      const tokenEntry = recoveryTokens.get(token);
-
-      if (!tokenEntry || tokenEntry.used || new Date() > tokenEntry.expires_at) {
-        return res.status(400).json({ error: "Token inválido ou expirado" });
-      }
-
-      // Validate password policy: min 8 chars, 1 uppercase, 1 lowercase, 1 digit
       const hasUppercase = /[A-Z]/.test(nova_senha);
       const hasLowercase = /[a-z]/.test(nova_senha);
       const hasDigit = /\d/.test(nova_senha);
 
-      if (nova_senha.length < 8 || !hasUppercase || !hasLowercase || !hasDigit) {
+      if (
+        nova_senha.length < 8 ||
+        !hasUppercase ||
+        !hasLowercase ||
+        !hasDigit
+      ) {
         return res.status(400).json({
-          error: "A senha deve ter no mínimo 8 caracteres, uma letra maiúscula, uma minúscula e um dígito"
+          success: false,
+          message:
+            "A senha deve ter no mínimo 8 caracteres, uma letra maiúscula, uma minúscula e um número.",
+          code: "WEAK_PASSWORD",
         });
       }
 
-      // Hash the new password
-      const senha_hash = await bcrypt.hash(nova_senha, 10);
+      const changed = await persistPasswordReset({
+        token,
+        newPassword: nova_senha,
+      });
 
-      // Update user's password in the database
-      await sql`UPDATE usuarios SET senha_hash = ${senha_hash} WHERE id = ${tokenEntry.usuario_id}`;
-
-      // Mark token as used
-      tokenEntry.used = true;
-
-      // Invalidate all other tokens for this user
-      for (const [key, entry] of recoveryTokens.entries()) {
-        if (entry.usuario_id === tokenEntry.usuario_id && key !== token) {
-          recoveryTokens.delete(key);
-        }
+      if (!changed) {
+        return res.status(400).json({
+          success: false,
+          message: "Token inválido, expirado ou já utilizado.",
+          code: "INVALID_RECOVERY_TOKEN",
+        });
       }
 
-      // Note: Session termination would involve invalidating JWTs.
-      // Since JWTs are stateless, in a production system we'd use a token blacklist
-      // or short-lived tokens with refresh tokens. For now, the password change
-      // effectively invalidates sessions since the old password no longer works
-      // for generating new tokens.
-
-      return res.status(200).json({ message: "Senha atualizada com sucesso" });
+      return res.status(200).json({
+        success: true,
+        message: "Senha atualizada com sucesso.",
+        data: null,
+      });
     } catch (error) {
       console.error("Erro no reset-password:", error);
-      return res.status(500).json({ error: "Erro interno no servidor" });
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno no servidor.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
     }
+  },
+
+  async refresh(req, res) {
+  try {
+    const { refresh_token } = req.body;
+
+    const rotated = await rotateRefreshToken(refresh_token);
+
+    if (!rotated) {
+      return res.status(401).json({
+        success: false,
+        message: "Refresh token inválido, expirado ou já utilizado.",
+        code: "INVALID_REFRESH_TOKEN",
+      });
+    }
+
+    const accessToken = createAccessToken(rotated.usuario);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        access_token: accessToken,
+        refresh_token: rotated.refreshToken,
+        token_type: "Bearer",
+        expires_in: process.env.JWT_EXPIRES_IN || "15m",
+        usuario: {
+          id: rotated.usuario.id,
+          nome_completo: rotated.usuario.nome_completo,
+          email: rotated.usuario.email,
+          tipo_perfil: rotated.usuario.tipo_perfil,
+          status: rotated.usuario.status,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Erro ao renovar sessão:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Erro interno ao renovar a sessão.",
+      code: "INTERNAL_SERVER_ERROR",
+    });
   }
+},
 };
 
-// Export the recovery tokens store for testing purposes
+/**
+ * Exportado somente para os testes automatizados atuais.
+ * Não deve ser usado por controllers ou rotas da aplicação.
+ */
 authController._recoveryTokens = recoveryTokens;
 
 module.exports = authController;

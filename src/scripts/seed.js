@@ -11,8 +11,27 @@ async function seed() {
 
     // 1. Limpar dados existentes (CASCADE resolverá as dependências)
     console.log("Limpando dados antigos...");
-    await sql`DELETE FROM usuarios`;
-    await sql`DELETE FROM categorias`;
+
+    await sql`
+      TRUNCATE TABLE
+        password_recovery_tokens,
+        refresh_tokens,
+        revoked_tokens,
+        login_attempts,
+        avaliacoes,
+        itens_aluguel,
+        alugueis,
+        itens_carrinho,
+        carrinho,
+        cacambas,
+        detalhes_cacambeiro,
+        enderecos,
+        usuarios,
+        categorias
+      RESTART IDENTITY CASCADE
+    `;
+
+    console.log("Dados antigos removidos.");
 
     // 2. Criar Categorias
     console.log("Criando categorias...");
