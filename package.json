@@ -10,6 +10,7 @@
     "migrate": "node src/scripts/hardeningMigration.js",
     "migrate:security": "node src/scripts/securityMigration.js",
     "migrate:password": "node src/scripts/passwordRecoveryMigration.js",
+    "test:supplier-rollback": "node src/scripts/testSupplierRollback.js",
     "test": "jest",
     "test:watch": "jest --watch"
   },
