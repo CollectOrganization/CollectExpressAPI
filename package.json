@@ -13,6 +13,7 @@
     "test:supplier-rollback": "node src/scripts/testSupplierRollback.js",
     "test:checkout-atomic": "node src/scripts/testAtomicCheckout.js",
     "db:check": "node src/scripts/checkDatabase.js",
+    "test:enderecos": "jest test/enderecosController.test.js --runInBand",
     "test": "jest",
     "test:watch": "jest --watch"
   },

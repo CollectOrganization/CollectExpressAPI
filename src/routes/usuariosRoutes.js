@@ -62,14 +62,12 @@ router.get(
 
 // Rota: POST /api/usuarios
 // Objetivo: Cadastrar um novo usuário
-router.post(
+/*router.post(
   "/",  
   authMiddleware,  
   roleMiddleware(["ADMIN"]),  
   usuariosController.criarAdmin,
 );
-
-/*
 router.post(
   "/admin",
   authMiddleware,
