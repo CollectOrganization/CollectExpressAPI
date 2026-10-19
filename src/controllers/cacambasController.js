@@ -149,6 +149,50 @@ async function executeListQuery({ tipo_residuo, cacambeiro_id, search, offset })
 
 const cacambasController = {
   /**
+   * GET /api/cacambas/minhas
+   * Lista todas as caçambas do fornecedor autenticado,
+   * incluindo disponíveis e indisponíveis.
+   */
+  async minhas(req, res) {
+    try {
+      const cacambeiroId = req.usuario_id;
+
+      const cacambas = await sql`
+        SELECT
+          id,
+          cacambeiro_id,
+          nome,
+          tipo_residuo,
+          tamanho_m3,
+          preco_diaria,
+          foto_url,
+          disponivel,
+          criado_em
+        FROM cacambas
+        WHERE cacambeiro_id = ${cacambeiroId}
+        ORDER BY criado_em DESC
+      `;
+
+      return res.status(200).json({
+        success: true,
+        data: cacambas,
+      });
+    } catch (error) {
+      console.error("Erro ao listar minhas caçambas:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno ao buscar suas caçambas.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
+    }
+  },
+
+  async listar(req, res) {
+    // mantenha a implementação atual
+  },
+  
+  /**
    * GET /api/cacambas
    * Lista caçambas disponíveis no marketplace com paginação, busca e filtros.
    * Query params: page, tipo_residuo, cacambeiro_id, search (min 3 chars)

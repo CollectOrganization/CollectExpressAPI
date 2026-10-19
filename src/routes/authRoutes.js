@@ -5,15 +5,23 @@ const authMiddleware = require("../middlewares/authMiddleware");
 const validationMiddleware = require(
   "../middlewares/validationMiddleware",
 );
+
+const validateSupplierRegistration = require(
+  "../middlewares/validateSupplierRegistration",
+);
+
 const {
   rateLimitMiddleware,
 } = require("../middlewares/rateLimitMiddleware");
+
 const {
   loginLimiter,
   registerLimiter,
   passwordRecoveryLimiter,
   refreshTokenLimiter,
 } = require("../middlewares/securityRateLimits");
+
+const schemas = require("../validators/requestSchemas");
 
 const router = express.Router();
 
@@ -322,11 +330,20 @@ const logoutSchema = {
  *
  * Cadastro público somente para CONSUMIDOR e CACAMBEIRO.
  */
+/*
 router.post(
   "/register",
   registerLimiter,
   validationMiddleware(registerSchema),
   validateCacambeiroDetails,
+  authController.register,
+);
+*/
+router.post(
+  "/register",
+  registerLimiter,
+  validationMiddleware(schemas.register),
+  validateSupplierRegistration,
   authController.register,
 );
 
@@ -337,43 +354,85 @@ router.post(
  * - express-rate-limit;
  * - controle persistido de tentativas por IP.
  */
+/*
 router.post(
   "/login",
   loginLimiter,
   rateLimitMiddleware,
   validationMiddleware(loginSchema),
   authController.login,
+);*/
+router.post(
+  "/login",
+  loginLimiter,
+  validationMiddleware(schemas.login),
+  authController.login,
 );
+
+// Renova a sessão e rotaciona o refresh token.
+// O refresh token anterior deixa de funcionar.
+router.post(
+  "/refresh",
+  refreshTokenLimiter,
+  validationMiddleware(schemas.refresh),
+  authController.refresh,
+);
+
 
 /**
  * POST /api/auth/forgot-password
+ * Solicita código de recuperação por e-mail, SMS ou WhatsApp.
  */
+/*
 router.post(
   "/forgot-password",
   passwordRecoveryLimiter,
   validationMiddleware(forgotPasswordSchema),
   authController.forgotPassword,
+);*/
+router.post(
+  "/forgot-password",
+  passwordRecoveryLimiter,
+  validationMiddleware(schemas.forgotPassword),
+  authController.forgotPassword,
 );
 
 /**
  * POST /api/auth/reset-password
+ * Valida o código recebido e redefine a senha.
+ * As sessões anteriores do usuário serão invalidadas.
  */
+/*
 router.post(
   "/reset-password",
   passwordRecoveryLimiter,
   validationMiddleware(resetPasswordSchema),
   authController.resetPassword,
+);*/
+router.post(
+  "/reset-password",
+  passwordRecoveryLimiter,
+  validationMiddleware(schemas.resetPassword),
+  authController.resetPassword,
 );
 
 /**
  * POST /api/auth/logout
- *
+ * Encerra a sessão atual.
+ * Requer access token e recebe o refresh token no body.
  * Exige JWT válido e adiciona o token atual à blacklist.
  */
+/*
 router.post(
   "/logout",
   authMiddleware,
   validationMiddleware(logoutSchema),
+  authController.logout,
+);*/
+router.post(
+  "/logout",
+  authMiddleware,
+  validationMiddleware(schemas.logout),
   authController.logout,
 );
 
