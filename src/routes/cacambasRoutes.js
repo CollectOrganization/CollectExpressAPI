@@ -1,5 +1,88 @@
 const express = require("express");
 
+const cacambasController = require("../controllers/cacambasController");
+const authMiddleware = require("../middlewares/authMiddleware");
+const roleMiddleware = require("../middlewares/roleMiddleware");
+const validationMiddleware = require("../middlewares/validationMiddleware");
+const schemas = require("../validators/requestSchemas");
+
+const router = express.Router();
+
+/*
+ * Rotas específicas devem vir antes de /:id.
+ */
+
+// Lista todas as caçambas do fornecedor autenticado.
+router.get(
+  "/minhas",
+  authMiddleware,
+  roleMiddleware(["CACAMBEIRO"]),
+  cacambasController.minhas,
+);
+
+// Lista pública do marketplace.
+router.get(
+  "/",
+  cacambasController.listar,
+);
+
+// Cadastra uma caçamba.
+router.post(
+  "/",
+  authMiddleware,
+  roleMiddleware(["CACAMBEIRO"]),
+  validationMiddleware(schemas.createDumpster),
+  cacambasController.criar,
+);
+
+/*
+ * Rotas com parâmetro dinâmico ficam depois das rotas específicas.
+ */
+
+// Detalhes públicos.
+router.get(
+  "/:id",
+  validationMiddleware(schemas.uuidParam, "params"),
+  cacambasController.detalhe,
+);
+
+// Atualiza a caçamba do fornecedor.
+router.put(
+  "/:id",
+  authMiddleware,
+  roleMiddleware(["CACAMBEIRO"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  validationMiddleware(
+    schemas.updateDumpster,
+    "body",
+    {
+      atLeastOne: [
+        "nome",
+        "foto_url",
+        "tipo_residuo",
+        "tamanho_m3",
+        "preco_diaria",
+        "disponivel",
+      ],
+    },
+  ),
+  cacambasController.atualizar,
+);
+
+// Remove ou desativa a caçamba.
+router.delete(
+  "/:id",
+  authMiddleware,
+  roleMiddleware(["CACAMBEIRO"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  cacambasController.remover,
+);
+
+module.exports = router;
+
+// -------------------- Old Version --------------
+/*const express = require("express");
+
 const router = express.Router();
 const cacambasController = require("../controllers/cacambasController");
 const authMiddleware = require("../middlewares/authMiddleware");
@@ -55,7 +138,7 @@ router.get(
 /*router.get(
   "/:id", 
   cacambasController.detalhe
-);*/
+);*
 router.get(
   "/:id",
   validationMiddleware(schemas.uuidParam, "params"),
@@ -82,7 +165,8 @@ router.get(
   roleMiddleware(["CACAMBEIRO"]),
   validationMiddleware(criarCacambaSchema),
   cacambasController.criar
-);*/
+);*
+
 // Cadastra uma nova caçamba.
 // Exclusivo para fornecedores autenticados.
 router.post(
@@ -99,7 +183,9 @@ router.post(
   "/:id",
   roleMiddleware(["CACAMBEIRO"]),
   cacambasController.atualizar
-);*/
+);*
+
+
 // Atualiza uma caçamba.
 // O controller também verifica se ela pertence ao fornecedor.
 router.put(
@@ -131,7 +217,8 @@ router.put(
   "/:id",
   roleMiddleware(["CACAMBEIRO"]),
   cacambasController.remover
-);*/
+);*
+
 // Remove uma caçamba pertencente ao fornecedor.
 // A remoção é bloqueada quando existem pedidos ativos.
 router.delete(
@@ -150,7 +237,7 @@ router.delete(
   authMiddleware,
   roleMiddleware(["CACAMBEIRO"]),
   cacambasController.minhas,
-);*/
+);*
 
 // Retorna os detalhes públicos de uma caçamba.
 // Deve ficar depois de /minhas para evitar conflito de rotas.
@@ -161,3 +248,4 @@ router.get(
 );
 
 module.exports = router;
+*/
