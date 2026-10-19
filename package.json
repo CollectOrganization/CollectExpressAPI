@@ -12,6 +12,7 @@
     "migrate:password": "node src/scripts/passwordRecoveryMigration.js",
     "test:supplier-rollback": "node src/scripts/testSupplierRollback.js",
     "test:checkout-atomic": "node src/scripts/testAtomicCheckout.js",
+    "db:check": "node src/scripts/checkDatabase.js",
     "test": "jest",
     "test:watch": "jest --watch"
   },
