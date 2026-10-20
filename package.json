@@ -17,6 +17,7 @@
     "test:cacambas": "node src/scripts/testCacambasController.js",
     "test:cart": "node src/scripts/testCarrinhoController.js",
     "test:alugueis": "node src/scripts/testAlugueisController.js",
+    "test:avaliacoes": "node src/scripts/testAvaliacoesController.js",
     "test": "jest",
     "test:watch": "jest --watch"
   },
