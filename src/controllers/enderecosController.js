@@ -148,6 +148,129 @@ const enderecosController = {
   },
 
   /**
+   * PUT /api/enderecos/:id
+   *
+   * Atualiza um endereço pertencente ao usuário autenticado.
+   *
+   * Regras:
+   * - exige autenticação;
+   * - somente o proprietário pode atualizar;
+   * - não permite alterar endereço vinculado a pedido ativo;
+   * - todos os campos principais devem ser enviados.
+   */
+  async atualizar(req, res) {
+    try {
+      const usuarioId = req.usuario_id;
+      const { id } = req.params;
+
+      const {
+        cep,
+        logradouro,
+        numero,
+        bairro,
+        cidade_estado,
+      } = req.body;
+
+      /*
+      * Verifica simultaneamente se o endereço existe e se pertence
+      * ao usuário autenticado.
+      *
+      * A mesma resposta é usada para endereço inexistente ou de
+      * outro usuário, evitando revelar informações indevidas.
+      */
+      const enderecos = await sql`
+        SELECT id
+        FROM enderecos
+        WHERE id = ${id}
+          AND usuario_id = ${usuarioId}
+        LIMIT 1
+      `;
+
+      if (enderecos.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Endereço não encontrado.",
+          code: "ADDRESS_NOT_FOUND",
+        });
+      }
+
+      /*
+      * Impede a alteração de um endereço usado por um pedido ativo.
+      *
+      * Isso evita modificar o local de entrega de um pedido que
+      * já está em andamento.
+      */
+      const pedidosAtivos = await sql`
+        SELECT 1
+        FROM alugueis
+        WHERE endereco_id = ${id}
+          AND status_aluguel IN (
+            'AGUARDANDO_ENTREGA',
+            'EM_USO',
+            'AGUARDANDO_RETIRADA'
+          )
+        LIMIT 1
+      `;
+
+      if (pedidosAtivos.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Este endereço está vinculado a um pedido ativo e não pode ser alterado.",
+          code: "ADDRESS_HAS_ACTIVE_ORDER",
+        });
+      }
+
+      /*
+      * Atualiza somente quando o endereço também pertence ao
+      * usuário autenticado. Essa segunda verificação protege contra
+      * alterações entre a consulta anterior e este comando.
+      */
+      const resultado = await sql`
+        UPDATE enderecos
+        SET
+          cep = ${cep.replace(/\D/g, "")},
+          logradouro = ${logradouro.trim()},
+          numero = ${numero.trim()},
+          bairro = ${(bairro || "").trim()},
+          cidade_estado = ${cidade_estado.trim()}
+        WHERE id = ${id}
+          AND usuario_id = ${usuarioId}
+        RETURNING
+          id,
+          cep,
+          logradouro,
+          numero,
+          bairro,
+          cidade_estado,
+          criado_em
+      `;
+
+      if (resultado.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Endereço não encontrado.",
+          code: "ADDRESS_NOT_FOUND",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Endereço atualizado com sucesso.",
+        data: resultado[0],
+      });
+    } catch (error) {
+      console.error("Erro ao atualizar endereço:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno ao atualizar o endereço.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
+    }
+  },
+
+  /**
    * DELETE /api/enderecos/:id
    *
    * Remove um endereço do usuário autenticado.

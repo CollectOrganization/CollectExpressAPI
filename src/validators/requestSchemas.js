@@ -386,6 +386,38 @@ const schemas = {
       enum: ["daily", "weekly"],
     },
   },
+  updateAddress: {
+    cep: {
+      required: true,
+      type: "string",
+      format: "digits",
+      minLength: 8,
+      maxLength: 8,
+    },
+    logradouro: {
+      required: true,
+      type: "string",
+      minLength: 1,
+      maxLength: 200,
+    },
+    numero: {
+      required: true,
+      type: "string",
+      minLength: 1,
+      maxLength: 20,
+    },
+    bairro: {
+      required: false,
+      type: "string",
+      maxLength: 100,
+    },
+    cidade_estado: {
+      required: true,
+      type: "string",
+      minLength: 3,
+      maxLength: 100,
+    },
+  },
 };
 
 module.exports = schemas;

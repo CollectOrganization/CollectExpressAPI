@@ -1,39 +1,60 @@
 const express = require("express");
+
+const enderecosController = require(
+  "../controllers/enderecosController",
+);
+const authMiddleware = require(
+  "../middlewares/authMiddleware",
+);
+const validationMiddleware = require(
+  "../middlewares/validationMiddleware",
+);
+const schemas = require(
+  "../validators/requestSchemas",
+);
+
 const router = express.Router();
-const enderecosController = require("../controllers/enderecosController");
-const authMiddleware = require("../middlewares/authMiddleware");
 
-const validationMiddleware = require("../middlewares/validationMiddleware");
-const schemas = require("../validators/requestSchemas");
-
-// Todas as rotas de endereço exigem autenticação
+/*
+ * Todas as rotas de endereço exigem autenticação.
+ * O ID do proprietário é sempre obtido do JWT.
+ */
 router.use(authMiddleware);
 
-// GET /api/enderecos - Lista endereços do usuário autenticado
+/**
+ * GET /api/enderecos
+ * Lista os endereços do usuário autenticado.
+ */
 router.get(
-    "/", 
-    enderecosController.listar
+  "/",
+  enderecosController.listar,
 );
 
-// POST /api/enderecos - Cria novo endereço para o usuário autenticado
-// Cria um endereço para o usuário autenticado.
-// CEP deve possuir exatamente oito dígitos. 
-/*router.post(
-    "/", 
-    enderecosController.criar
-);
-*/
+/**
+ * POST /api/enderecos
+ * Cria um endereço para o usuário autenticado.
+ */
 router.post(
   "/",
   validationMiddleware(schemas.createAddress),
   enderecosController.criar,
 );
 
+/**
+ * PUT /api/enderecos/:id
+ * Atualiza um endereço pertencente ao usuário autenticado.
+ */
+router.put(
+  "/:id",
+  validationMiddleware(schemas.uuidParam, "params"),
+  validationMiddleware(schemas.updateAddress),
+  enderecosController.atualizar,
+);
 
-// DELETE /api/enderecos/:id - Remove endereço (verifica ownership + pedidos ativos)
-// Remove um endereço pertencente ao usuário.
-// A remoção é bloqueada quando existem pedidos ativos vinculados.
-/*router.delete("/:id", enderecosController.remover);*/
+/**
+ * DELETE /api/enderecos/:id
+ * Remove um endereço pertencente ao usuário autenticado.
+ */
 router.delete(
   "/:id",
   validationMiddleware(schemas.uuidParam, "params"),
