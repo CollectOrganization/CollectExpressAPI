@@ -15,6 +15,7 @@
     "db:check": "node src/scripts/checkDatabase.js",
     "test:enderecos": "jest test/enderecosController.test.js --runInBand",
     "test:cacambas": "node src/scripts/testCacambasController.js",
+    "test:cart": "node src/scripts/testCarrinhoController.js",
     "test": "jest",
     "test:watch": "jest --watch"
   },
