@@ -16,6 +16,7 @@
     "test:enderecos": "jest test/enderecosController.test.js --runInBand",
     "test:cacambas": "node src/scripts/testCacambasController.js",
     "test:cart": "node src/scripts/testCarrinhoController.js",
+    "test:alugueis": "node src/scripts/testAlugueisController.js",
     "test": "jest",
     "test:watch": "jest --watch"
   },

@@ -1,5 +1,819 @@
 const sql = require("../config/db");
 
+const {
+  sendSuccess,
+  sendError,
+} = require("../utils/apiResponse");
+
+const ITEMS_PER_PAGE = 20;
+
+const RENTAL_STATUSES = [
+  "AGUARDANDO_ENTREGA",
+  "EM_USO",
+  "AGUARDANDO_RETIRADA",
+  "FINALIZADO",
+];
+
+const PAYMENT_STATUSES = [
+  "PENDENTE",
+  "PAGO",
+];
+
+/**
+ * Converte o parâmetro de página em um número válido.
+ */
+function parsePage(value) {
+  return Math.max(1, Number.parseInt(value, 10) || 1);
+}
+
+/**
+ * Verifica rigorosamente uma data no formato YYYY-MM-DD.
+ *
+ * Evita datas que o JavaScript normalizaria silenciosamente,
+ * como 2026-02-31.
+ */
+function isValidDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const [year, month, day] = value
+    .split("-")
+    .map(Number);
+
+  const date = new Date(
+    year,
+    month - 1,
+    day,
+  );
+
+  return (
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
+  );
+}
+
+const alugueisController = {
+  /**
+   * POST /api/alugueis/checkout
+   *
+   * Finaliza o carrinho de forma atômica:
+   *
+   * 1. valida a data;
+   * 2. valida se o endereço pertence ao consumidor;
+   * 3. bloqueia o carrinho durante o checkout;
+   * 4. valida disponibilidade e fornecedor das caçambas;
+   * 5. cria o aluguel;
+   * 6. cria os itens do aluguel;
+   * 7. remove o carrinho.
+   *
+   * Todas as alterações são executadas em uma única instrução SQL.
+   * Se qualquer etapa falhar, o PostgreSQL desfaz toda a operação.
+   */
+  async checkout(req, res) {
+    try {
+      const consumidorId = req.usuario_id;
+      const {
+        endereco_id: enderecoId,
+        data_inicio: dataInicioString,
+      } = req.body;
+
+      /*
+       * Os campos já são validados pelo validationMiddleware,
+       * mas a data também precisa passar pela regra de negócio.
+       */
+      if (!isValidDate(dataInicioString)) {
+        return sendError(
+          res,
+          400,
+          "Data de início inválida.",
+          "INVALID_START_DATE",
+        );
+      }
+
+      const [year, month, day] = dataInicioString
+        .split("-")
+        .map(Number);
+
+      const dataInicio = new Date(
+        year,
+        month - 1,
+        day,
+      );
+
+      const hoje = new Date();
+      hoje.setHours(0, 0, 0, 0);
+
+      const diferencaDias = Math.round(
+        (dataInicio.getTime() - hoje.getTime()) /
+          (1000 * 60 * 60 * 24),
+      );
+
+      if (
+        diferencaDias < 1 ||
+        diferencaDias > 60
+      ) {
+        return sendError(
+          res,
+          400,
+          "A data de início deve estar entre 1 e 60 dias a partir de hoje.",
+          "INVALID_START_DATE",
+        );
+      }
+
+      /*
+       * Verifica ownership do endereço.
+       *
+       * Um consumidor não pode usar o endereço de outro usuário
+       * durante o checkout.
+       */
+      const enderecos = await sql`
+        SELECT id
+        FROM enderecos
+        WHERE id = ${enderecoId}
+          AND usuario_id = ${consumidorId}
+        LIMIT 1
+      `;
+
+      if (enderecos.length === 0) {
+        return sendError(
+          res,
+          404,
+          "Endereço não encontrado.",
+          "ADDRESS_NOT_FOUND",
+        );
+      }
+
+      /*
+       * Verificação inicial para retornar uma mensagem específica
+       * quando não existe carrinho.
+       *
+       * A consulta atômica abaixo fará a mesma proteção novamente,
+       * incluindo bloqueio contra checkouts concorrentes.
+       */
+      const carrinhos = await sql`
+        SELECT id
+        FROM carrinho
+        WHERE consumidor_id = ${consumidorId}
+        LIMIT 1
+      `;
+
+      if (carrinhos.length === 0) {
+        return sendError(
+          res,
+          400,
+          "O carrinho está vazio.",
+          "EMPTY_CART",
+        );
+      }
+
+      /*
+       * Checkout atômico.
+       *
+       * O carrinho é bloqueado com FOR UPDATE. Isso impede que
+       * duas requisições concorrentes criem dois pedidos usando
+       * o mesmo carrinho.
+       */
+      const pedidos = await sql`
+        WITH carrinho_bloqueado AS (
+          SELECT
+            c.id,
+            c.cacambeiro_id
+          FROM carrinho c
+          WHERE c.consumidor_id = ${consumidorId}
+          FOR UPDATE
+        ),
+
+        itens_carrinho_validacao AS (
+          SELECT
+            ic.cacamba_id,
+            ic.quantidade,
+            ic.dias_aluguel,
+            ca.preco_diaria,
+            ca.disponivel,
+            ca.cacambeiro_id,
+            cb.cacambeiro_id AS fornecedor_carrinho
+          FROM carrinho_bloqueado cb
+          INNER JOIN itens_carrinho ic
+            ON ic.carrinho_id = cb.id
+          INNER JOIN cacambas ca
+            ON ca.id = ic.cacamba_id
+        ),
+
+        resumo AS (
+          SELECT
+            COUNT(*)::int AS quantidade_itens,
+
+            COALESCE(
+              SUM(
+                quantidade *
+                dias_aluguel *
+                preco_diaria
+              ),
+              0
+            )::numeric AS total_itens,
+
+            MAX(dias_aluguel)::int AS max_dias,
+
+            COUNT(*) FILTER (
+              WHERE disponivel = FALSE
+                 OR cacambeiro_id <> fornecedor_carrinho
+            )::int AS itens_invalidos
+          FROM itens_carrinho_validacao
+        ),
+
+        novo_pedido AS (
+          INSERT INTO alugueis (
+            id,
+            consumidor_id,
+            cacambeiro_id,
+            endereco_id,
+            data_pedido,
+            data_inicio,
+            dias_aluguel,
+            preco_final,
+            status_pagamento,
+            status_aluguel
+          )
+          SELECT
+            gen_random_uuid(),
+            ${consumidorId},
+            cb.cacambeiro_id,
+            ${enderecoId},
+            NOW(),
+            ${dataInicioString}::date,
+            resumo.max_dias,
+
+            resumo.total_itens +
+            COALESCE(
+              (
+                SELECT dc.taxa_entrega
+                FROM detalhes_cacambeiro dc
+                WHERE dc.usuario_id = cb.cacambeiro_id
+              ),
+              0
+            ),
+
+            'PENDENTE',
+            'AGUARDANDO_ENTREGA'
+          FROM resumo
+          CROSS JOIN carrinho_bloqueado cb
+          WHERE resumo.quantidade_itens > 0
+            AND resumo.itens_invalidos = 0
+          RETURNING *
+        ),
+
+        novos_itens AS (
+          INSERT INTO itens_aluguel (
+            id,
+            aluguel_id,
+            cacamba_id,
+            quantidade,
+            dias_aluguel,
+            preco_diaria
+          )
+          SELECT
+            gen_random_uuid(),
+            np.id,
+            icv.cacamba_id,
+            icv.quantidade,
+            icv.dias_aluguel,
+            icv.preco_diaria
+          FROM itens_carrinho_validacao icv
+          CROSS JOIN novo_pedido np
+          RETURNING id
+        ),
+
+        carrinho_removido AS (
+          DELETE FROM carrinho c
+          USING carrinho_bloqueado cb
+          WHERE c.id = cb.id
+
+            /*
+             * O carrinho só é removido se o pedido foi criado.
+             */
+            AND EXISTS (
+              SELECT 1
+              FROM novo_pedido
+            )
+
+            /*
+             * Também confirma que todos os itens foram copiados
+             * para itens_aluguel.
+             */
+            AND (
+              SELECT COUNT(*)::int
+              FROM novos_itens
+            ) = (
+              SELECT quantidade_itens
+              FROM resumo
+            )
+
+          /*
+           * Os itens do carrinho são removidos automaticamente
+           * pela constraint ON DELETE CASCADE.
+           */
+          RETURNING c.id
+        )
+
+        SELECT np.*
+        FROM novo_pedido np
+        WHERE EXISTS (
+          SELECT 1
+          FROM carrinho_removido
+        )
+      `;
+
+      /*
+       * A ausência de resultado indica que:
+       *
+       * - o carrinho estava vazio;
+       * - uma caçamba ficou indisponível;
+       * - uma caçamba pertence a outro fornecedor;
+       * - outro checkout processou o carrinho primeiro.
+       */
+      if (pedidos.length === 0) {
+        return sendError(
+          res,
+          400,
+          "Não foi possível concluir o pedido. Verifique a disponibilidade e os itens do carrinho.",
+          "CHECKOUT_FAILED",
+        );
+      }
+
+      return sendSuccess(
+        res,
+        pedidos[0],
+        201,
+        "Pedido criado com sucesso.",
+      );
+    } catch (error) {
+      console.error("Erro no checkout:", error);
+
+      return sendError(
+        res,
+        500,
+        "Erro interno ao processar o pedido.",
+        "CHECKOUT_INTERNAL_ERROR",
+      );
+    }
+  },
+
+  /**
+   * GET /api/alugueis/meus
+   *
+   * Retorna o histórico paginado de pedidos do consumidor
+   * autenticado.
+   *
+   * Query:
+   * - page: página atual, começando em 1.
+   */
+  async meusPedidos(req, res) {
+    try {
+      const consumidorId = req.usuario_id;
+      const page = parsePage(req.query.page);
+      const offset = (page - 1) * ITEMS_PER_PAGE;
+
+      const countResult = await sql`
+        SELECT COUNT(*)::int AS total
+        FROM alugueis
+        WHERE consumidor_id = ${consumidorId}
+      `;
+
+      const total = countResult[0].total;
+      const totalPages = Math.ceil(
+        total / ITEMS_PER_PAGE,
+      );
+
+      const pedidos = await sql`
+        SELECT
+          a.*,
+          u.nome_completo AS cacambeiro_nome
+        FROM alugueis a
+        INNER JOIN usuarios u
+          ON u.id = a.cacambeiro_id
+        WHERE a.consumidor_id = ${consumidorId}
+        ORDER BY a.data_pedido DESC
+        LIMIT ${ITEMS_PER_PAGE}
+        OFFSET ${offset}
+      `;
+
+      return sendSuccess(
+        res,
+        {
+          items: pedidos,
+          pagination: {
+            total,
+            page,
+            per_page: ITEMS_PER_PAGE,
+            total_pages: totalPages,
+          },
+        },
+        200,
+        "Pedidos encontrados com sucesso.",
+      );
+    } catch (error) {
+      console.error(
+        "Erro ao buscar pedidos do consumidor:",
+        error,
+      );
+
+      return sendError(
+        res,
+        500,
+        "Erro interno ao buscar pedidos.",
+        "ORDERS_FETCH_ERROR",
+      );
+    }
+  },
+
+  /**
+   * GET /api/alugueis/gestao
+   *
+   * Retorna os pedidos associados ao fornecedor autenticado.
+   */
+  async gestaoPedidos(req, res) {
+    try {
+      const cacambeiroId = req.usuario_id;
+
+      const pedidos = await sql`
+        SELECT
+          a.*,
+          u.nome_completo AS consumidor_nome,
+          u.telefone AS consumidor_telefone,
+          e.logradouro,
+          e.numero,
+          e.bairro,
+          e.cidade_estado,
+          e.cep
+        FROM alugueis a
+        INNER JOIN usuarios u
+          ON u.id = a.consumidor_id
+        LEFT JOIN enderecos e
+          ON e.id = a.endereco_id
+        WHERE a.cacambeiro_id = ${cacambeiroId}
+        ORDER BY
+          CASE
+            WHEN a.status_aluguel = 'AGUARDANDO_ENTREGA' THEN 1
+            WHEN a.status_aluguel = 'EM_USO' THEN 2
+            WHEN a.status_aluguel = 'AGUARDANDO_RETIRADA' THEN 3
+            WHEN a.status_aluguel = 'FINALIZADO' THEN 4
+          END,
+          a.data_inicio ASC
+      `;
+
+      return sendSuccess(
+        res,
+        pedidos,
+        200,
+        "Pedidos de gestão encontrados com sucesso.",
+      );
+    } catch (error) {
+      console.error(
+        "Erro ao buscar gestão de pedidos:",
+        error,
+      );
+
+      return sendError(
+        res,
+        500,
+        "Erro interno ao buscar a gestão de pedidos.",
+        "SUPPLIER_ORDERS_FETCH_ERROR",
+      );
+    }
+  },
+
+  /**
+   * GET /api/alugueis
+   *
+   * Lista administrativa de pedidos.
+   *
+   * Query:
+   * - page;
+   * - status_aluguel;
+   * - status_pagamento;
+   * - search.
+   */
+  async listarTodos(req, res) {
+    try {
+      const page = parsePage(req.query.page);
+      const offset = (page - 1) * ITEMS_PER_PAGE;
+
+      const statusAluguel =
+        req.query.status_aluguel || null;
+
+      const statusPagamento =
+        req.query.status_pagamento || null;
+
+      const search =
+        req.query.search?.trim() || null;
+
+      /*
+       * As validações no controller são mantidas como proteção
+       * complementar às validações das rotas.
+       */
+      if (
+        statusAluguel &&
+        !RENTAL_STATUSES.includes(statusAluguel)
+      ) {
+        return sendError(
+          res,
+          400,
+          "Status de aluguel inválido.",
+          "INVALID_RENTAL_STATUS",
+          {
+            status_aluguel:
+              "Informe um status de aluguel válido.",
+          },
+        );
+      }
+
+      if (
+        statusPagamento &&
+        !PAYMENT_STATUSES.includes(statusPagamento)
+      ) {
+        return sendError(
+          res,
+          400,
+          "Status de pagamento inválido.",
+          "INVALID_PAYMENT_STATUS",
+          {
+            status_pagamento:
+              "Informe um status de pagamento válido.",
+          },
+        );
+      }
+
+      if (search && search.length > 150) {
+        return sendError(
+          res,
+          400,
+          "O termo de busca é muito longo.",
+          "INVALID_SEARCH",
+          {
+            search:
+              "A busca deve possuir no máximo 150 caracteres.",
+          },
+        );
+      }
+
+      const uuidRegex =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+      const searchIsUuid =
+        search !== null && uuidRegex.test(search);
+
+      const searchPattern = search
+        ? `%${search}%`
+        : null;
+
+      /*
+       * A consulta usa filtros opcionais sem interpolar comandos
+       * SQL manualmente. Os valores continuam parametrizados pelo
+       * driver Neon.
+       */
+      const countResult = await sql`
+        SELECT COUNT(*)::int AS total
+        FROM alugueis a
+        INNER JOIN usuarios uc
+          ON uc.id = a.consumidor_id
+        INNER JOIN usuarios uk
+          ON uk.id = a.cacambeiro_id
+        WHERE (
+          ${statusAluguel}::text IS NULL
+          OR a.status_aluguel::text = ${statusAluguel}
+        )
+        AND (
+          ${statusPagamento}::text IS NULL
+          OR a.status_pagamento::text = ${statusPagamento}
+        )
+        AND (
+          ${search}::text IS NULL
+
+          OR (
+            ${searchIsUuid} = TRUE
+            AND a.id::text = ${search}
+          )
+
+          OR (
+            ${searchIsUuid} = FALSE
+            AND (
+              uc.nome_completo ILIKE ${searchPattern}
+              OR uk.nome_completo ILIKE ${searchPattern}
+            )
+          )
+        )
+      `;
+
+      const total = countResult[0].total;
+      const totalPages = Math.ceil(
+        total / ITEMS_PER_PAGE,
+      );
+
+      const pedidos = await sql`
+        SELECT
+          a.*,
+          uc.nome_completo AS consumidor_nome,
+          uk.nome_completo AS cacambeiro_nome,
+          e.logradouro,
+          e.numero,
+          e.bairro,
+          e.cidade_estado,
+          e.cep
+        FROM alugueis a
+        INNER JOIN usuarios uc
+          ON uc.id = a.consumidor_id
+        INNER JOIN usuarios uk
+          ON uk.id = a.cacambeiro_id
+        LEFT JOIN enderecos e
+          ON e.id = a.endereco_id
+        WHERE (
+          ${statusAluguel}::text IS NULL
+          OR a.status_aluguel::text = ${statusAluguel}
+        )
+        AND (
+          ${statusPagamento}::text IS NULL
+          OR a.status_pagamento::text = ${statusPagamento}
+        )
+        AND (
+          ${search}::text IS NULL
+
+          OR (
+            ${searchIsUuid} = TRUE
+            AND a.id::text = ${search}
+          )
+
+          OR (
+            ${searchIsUuid} = FALSE
+            AND (
+              uc.nome_completo ILIKE ${searchPattern}
+              OR uk.nome_completo ILIKE ${searchPattern}
+            )
+          )
+        )
+        ORDER BY a.data_pedido DESC
+        LIMIT ${ITEMS_PER_PAGE}
+        OFFSET ${offset}
+      `;
+
+      return sendSuccess(
+        res,
+        {
+          items: pedidos,
+          pagination: {
+            total,
+            page,
+            per_page: ITEMS_PER_PAGE,
+            total_pages: totalPages,
+          },
+        },
+        200,
+        "Pedidos encontrados com sucesso.",
+      );
+    } catch (error) {
+      console.error(
+        "Erro ao listar todos os pedidos:",
+        error,
+      );
+
+      return sendError(
+        res,
+        500,
+        "Erro interno ao buscar pedidos.",
+        "ADMIN_ORDERS_FETCH_ERROR",
+      );
+    }
+  },
+
+  /**
+   * PATCH /api/alugueis/:id/status
+   *
+   * Atualiza o status do pedido respeitando a máquina
+   * de estados sequencial:
+   *
+   * AGUARDANDO_ENTREGA
+   *          ↓
+   * EM_USO
+   *          ↓
+   * AGUARDANDO_RETIRADA
+   *          ↓
+   * FINALIZADO
+   */
+  async atualizarStatus(req, res) {
+    try {
+      const cacambeiroId = req.usuario_id;
+      const { id } = req.params;
+      const {
+        status_aluguel: novoStatus,
+      } = req.body;
+
+      /*
+       * Cada novo status possui exatamente um estado anterior
+       * permitido.
+       */
+      const previousStatusByNextStatus = {
+        EM_USO: "AGUARDANDO_ENTREGA",
+        AGUARDANDO_RETIRADA: "EM_USO",
+        FINALIZADO: "AGUARDANDO_RETIRADA",
+      };
+
+      const statusAnterior =
+        previousStatusByNextStatus[novoStatus];
+
+      if (!statusAnterior) {
+        return sendError(
+          res,
+          400,
+          "Status de aluguel inválido.",
+          "INVALID_RENTAL_STATUS",
+        );
+      }
+
+      /*
+       * A condição do status é aplicada diretamente no UPDATE.
+       *
+       * Isso impede que duas requisições concorrentes atualizem
+       * o mesmo pedido partindo de um estado desatualizado.
+       */
+      const resultado = await sql`
+        UPDATE alugueis
+        SET status_aluguel = ${novoStatus}
+        WHERE id = ${id}
+          AND cacambeiro_id = ${cacambeiroId}
+          AND status_aluguel = ${statusAnterior}
+        RETURNING *
+      `;
+
+      if (resultado.length > 0) {
+        return sendSuccess(
+          res,
+          resultado[0],
+          200,
+          "Status atualizado com sucesso.",
+        );
+      }
+
+      /*
+       * Como o UPDATE não retornou registro, consultamos o pedido
+       * para diferenciar "não encontrado" de "transição inválida".
+       */
+      const pedidos = await sql`
+        SELECT id, status_aluguel
+        FROM alugueis
+        WHERE id = ${id}
+          AND cacambeiro_id = ${cacambeiroId}
+        LIMIT 1
+      `;
+
+      if (pedidos.length === 0) {
+        return sendError(
+          res,
+          404,
+          "Pedido não encontrado ou não pertence a você.",
+          "ORDER_NOT_FOUND",
+        );
+      }
+
+      if (
+        pedidos[0].status_aluguel === "FINALIZADO"
+      ) {
+        return sendError(
+          res,
+          409,
+          "O pedido já está finalizado.",
+          "ORDER_ALREADY_FINISHED",
+        );
+      }
+
+      return sendError(
+        res,
+        409,
+        `Transição inválida. O pedido está em '${pedidos[0].status_aluguel}' e não pode avançar diretamente para '${novoStatus}'.`,
+        "INVALID_STATUS_TRANSITION",
+      );
+    } catch (error) {
+      console.error(
+        "Erro ao atualizar status do pedido:",
+        error,
+      );
+
+      return sendError(
+        res,
+        500,
+        "Erro interno ao atualizar o status do pedido.",
+        "ORDER_STATUS_UPDATE_ERROR",
+      );
+    }
+  },
+};
+
+module.exports = alugueisController;
+
+
+// --------------- Old Version ---------------
+/*const sql = require("../config/db");
+
 const alugueisController = {
   /**
  * POST /api/alugueis/checkout
@@ -13,7 +827,7 @@ const alugueisController = {
  * - remove carrinho.
  *
  * Se qualquer operação falhar, nenhuma alteração é persistida.
- */
+ *
   async checkout(req, res) {
     try {
       const consumidorId = req.usuario_id;
@@ -105,7 +919,7 @@ const alugueisController = {
       * Todas as operações abaixo fazem parte da mesma transação
       * implícita do PostgreSQL. Se qualquer CTE falhar, tudo será
       * revertido automaticamente.
-      */
+      *
       const pedidos = await sql`
         WITH itens_validos AS (
           SELECT
@@ -226,7 +1040,7 @@ const alugueisController = {
           /*
           * Os itens do carrinho serão removidos automaticamente
           * pelo ON DELETE CASCADE da chave estrangeira.
-          */
+          *
           RETURNING id
         )
 
@@ -241,7 +1055,7 @@ const alugueisController = {
       /*
       * Se não houve resultado, o carrinho estava sem itens válidos,
       * continha caçamba indisponível ou de outro fornecedor.
-      */
+      *
       if (pedidos.length === 0) {
         return res.status(400).json({
           success: false,
@@ -272,7 +1086,7 @@ const alugueisController = {
    * Consumidor visualiza seu histórico de pedidos com paginação.
    * Query: page (default 1)
    * Returns: { data, total, page, totalPages }
-   */
+   *
   async meusPedidos(req, res) {
     try {
       const consumidor_id = req.usuario_id;
@@ -335,7 +1149,7 @@ const alugueisController = {
    * Admin visualiza todos os pedidos com paginação, filtros e busca textual.
    * Query: page (default 1), status_aluguel, status_pagamento, search (min 1 char)
    * Returns: { data, total, page, totalPages }
-   */
+   *
   async listarTodos(req, res) {
     try {
       const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -457,3 +1271,4 @@ const alugueisController = {
 };
 
 module.exports = alugueisController;
+*/
