@@ -184,6 +184,12 @@ function validationMiddleware(
   source = "body",
   options = {},
 ) {
+   if (!schema || typeof schema !== "object") {
+    throw new TypeError(
+      `Schema de validação inválido para a fonte '${source}'.`,
+    );
+  }
+
   return function validate(req, res, next) {
     const dados = req[source] || {};
     const fields = {};

@@ -379,6 +379,13 @@ const schemas = {
       maxLength: 100,
     },
   },
+    dashboardQuery: {
+    granularity: {
+      required: false,
+      type: "string",
+      enum: ["daily", "weekly"],
+    },
+  },
 };
 
 module.exports = schemas;

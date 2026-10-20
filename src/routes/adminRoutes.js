@@ -14,7 +14,17 @@ router.use(roleMiddleware(['ADMIN']));
 
 
 // Retorna métricas gerais da plataforma.
-router.get("/dashboard", adminController.dashboard);
+//router.get("/dashboard", adminController.dashboard);
+router.get(
+  "/dashboard",
+  validationMiddleware(
+    schemas.dashboardQuery,
+    "query",
+  ),
+  adminController.dashboard,
+);
+
+
 
 // Categorias CRUD
 
