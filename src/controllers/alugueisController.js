@@ -54,6 +54,52 @@ function isValidDate(value) {
   );
 }
 
+const STATUS_SEQUENCE = [
+  "AGUARDANDO_ENTREGA",
+  "EM_USO",
+  "AGUARDANDO_RETIRADA",
+  "FINALIZADO",
+];
+
+/**
+ * Converte o status atual em uma estrutura adequada para
+ * a linha do tempo exibida pelo Flutter.
+ *
+ * Isso não substitui um histórico persistido. Por enquanto,
+ * representa somente o progresso atual do pedido.
+ */
+function montarEtapasPedido(statusAtual) {
+  const currentIndex = STATUS_SEQUENCE.indexOf(statusAtual);
+
+  const definitions = [
+    {
+      status: "AGUARDANDO_ENTREGA",
+      titulo: "Pedido confirmado",
+    },
+    {
+      status: "EM_USO",
+      titulo: "Caçamba entregue",
+    },
+    {
+      status: "AGUARDANDO_RETIRADA",
+      titulo: "Retirada solicitada",
+    },
+    {
+      status: "FINALIZADO",
+      titulo: "Pedido finalizado",
+    },
+  ];
+
+  return definitions.map((item, index) => ({
+    ...item,
+    concluida: index < currentIndex ||
+      statusAtual === "FINALIZADO",
+    atual: index === currentIndex &&
+      statusAtual !== "FINALIZADO",
+    pendente: index > currentIndex,
+  }));
+}
+
 const alugueisController = {
   /**
    * POST /api/alugueis/checkout
@@ -804,6 +850,277 @@ const alugueisController = {
         "Erro interno ao atualizar o status do pedido.",
         "ORDER_STATUS_UPDATE_ERROR",
       );
+    }
+  },
+
+  /**
+   * GET /api/alugueis/:id
+   *
+   * Retorna os detalhes completos de um pedido:
+   * - dados gerais do aluguel;
+   * - consumidor;
+   * - fornecedor;
+   * - endereço de entrega;
+   * - itens e caçambas;
+   * - avaliação, quando existente;
+   * - representação das etapas do pedido.
+   *
+   * Regras de acesso:
+   * - CONSUMIDOR: somente pedidos próprios;
+   * - CACAMBEIRO: somente pedidos atribuídos a ele;
+   * - ADMIN: qualquer pedido.
+   */
+  async detalhe(req, res) {
+    try {
+      const usuarioId = req.usuario_id;
+      const tipoPerfil = req.tipo_perfil;
+      const { id } = req.params;
+
+      /*
+      * Busca inicialmente o pedido e seus relacionamentos principais.
+      *
+      * A autorização também é aplicada na consulta para evitar que
+      * informações de outro usuário sejam carregadas indevidamente.
+      */
+      const pedidos = await sql`
+        SELECT
+          a.id,
+          a.consumidor_id,
+          a.cacambeiro_id,
+          a.endereco_id,
+          a.data_pedido,
+          a.data_inicio,
+          a.dias_aluguel,
+          a.preco_final,
+          a.status_pagamento,
+          a.status_aluguel,
+
+          consumidor.nome_completo AS consumidor_nome,
+          consumidor.email AS consumidor_email,
+          consumidor.telefone AS consumidor_telefone,
+
+          cacambeiro.nome_completo AS cacambeiro_nome,
+          cacambeiro.email AS cacambeiro_email,
+          cacambeiro.telefone AS cacambeiro_telefone,
+
+          e.cep,
+          e.logradouro,
+          e.numero,
+          e.bairro,
+          e.cidade_estado,
+
+          dc.taxa_entrega,
+          dc.horario_inicio,
+          dc.horario_fim
+
+        FROM alugueis a
+
+        INNER JOIN usuarios consumidor
+          ON consumidor.id = a.consumidor_id
+
+        INNER JOIN usuarios cacambeiro
+          ON cacambeiro.id = a.cacambeiro_id
+
+        INNER JOIN enderecos e
+          ON e.id = a.endereco_id
+
+        LEFT JOIN detalhes_cacambeiro dc
+          ON dc.usuario_id = a.cacambeiro_id
+
+        WHERE a.id = ${id}
+          AND (
+            ${tipoPerfil} = 'ADMIN'
+            OR (
+              ${tipoPerfil} = 'CONSUMIDOR'
+              AND a.consumidor_id = ${usuarioId}
+            )
+            OR (
+              ${tipoPerfil} = 'CACAMBEIRO'
+              AND a.cacambeiro_id = ${usuarioId}
+            )
+          )
+
+        LIMIT 1
+      `;
+
+      if (pedidos.length === 0) {
+        /*
+        * Usamos a mesma resposta para pedido inexistente e pedido sem
+        * autorização. Isso evita revelar a existência de pedidos de
+        * outros usuários.
+        */
+        return res.status(404).json({
+          success: false,
+          message: "Pedido não encontrado.",
+          code: "ORDER_NOT_FOUND",
+        });
+      }
+
+      const pedido = pedidos[0];
+
+      //Verifica se quem esta tentando ver os detalhes da caçamba tem acesso permitido.
+      const possuiAcesso =
+      tipoPerfil === "ADMIN" ||
+      (
+        tipoPerfil === "CONSUMIDOR" &&
+        pedido.consumidor_id === usuarioId
+      ) ||
+      (
+        tipoPerfil === "CACAMBEIRO" &&
+        pedido.cacambeiro_id === usuarioId
+      );
+
+    if (!possuiAcesso) {
+      return res.status(403).json({
+        success: false,
+        message: "Você não possui acesso a este pedido.",
+        code: "ORDER_ACCESS_DENIED",
+      });
+    }
+
+      // Busca os itens associados ao aluguel.
+      const itensRows = await sql`
+        SELECT
+          ia.id,
+          ia.cacamba_id,
+          ia.quantidade,
+          ia.dias_aluguel,
+          ia.preco_diaria,
+
+          c.nome AS cacamba_nome,
+          c.tipo_residuo,
+          c.tamanho_m3,
+          c.foto_url
+
+        FROM itens_aluguel ia
+
+        INNER JOIN cacambas c
+          ON c.id = ia.cacamba_id
+
+        WHERE ia.aluguel_id = ${id}
+
+        ORDER BY c.nome ASC
+      `;
+
+      // A avaliação pode não existir, pois somente pedidos finalizados
+      // podem ser avaliados.
+      const avaliacoes = await sql`
+        SELECT
+          id,
+          nota,
+          comentario,
+          data_avaliacao
+        FROM avaliacoes
+        WHERE aluguel_id = ${id}
+        LIMIT 1
+      `;
+
+      const taxaEntrega = Number(pedido.taxa_entrega || 0);
+
+      const itens = itensRows.map((item) => {
+        const precoDiaria = Number(item.preco_diaria);
+        const quantidade = Number(item.quantidade);
+        const diasAluguel = Number(item.dias_aluguel);
+
+        return {
+          id: item.id,
+          quantidade,
+          dias_aluguel: diasAluguel,
+          preco_diaria: precoDiaria,
+          subtotal: quantidade * diasAluguel * precoDiaria,
+
+          cacamba: {
+            id: item.cacamba_id,
+            nome: item.cacamba_nome,
+            tipo_residuo: item.tipo_residuo,
+            tamanho_m3: Number(item.tamanho_m3),
+            foto_url: item.foto_url,
+          },
+        };
+      });
+
+      const subtotalItens = itens.reduce(
+        (total, item) => total + item.subtotal,
+        0,
+      );
+
+      const response = {
+        id: pedido.id,
+
+        // Código amigável provisório derivado do UUID.
+        codigo: `COL-${pedido.id
+          .replaceAll("-", "")
+          .substring(0, 10)
+          .toUpperCase()}`,
+
+        data_pedido: pedido.data_pedido,
+        data_inicio: pedido.data_inicio,
+        dias_aluguel: Number(pedido.dias_aluguel),
+        status_aluguel: pedido.status_aluguel,
+        status_pagamento: pedido.status_pagamento,
+
+        valores: {
+          subtotal_itens: subtotalItens,
+          taxa_entrega: taxaEntrega,
+          preco_final: Number(pedido.preco_final),
+        },
+
+        consumidor: {
+          id: pedido.consumidor_id,
+          nome_completo: pedido.consumidor_nome,
+          email: pedido.consumidor_email,
+          telefone: pedido.consumidor_telefone,
+        },
+
+        cacambeiro: {
+          id: pedido.cacambeiro_id,
+          nome_completo: pedido.cacambeiro_nome,
+          email: pedido.cacambeiro_email,
+          telefone: pedido.cacambeiro_telefone,
+          horario_inicio: pedido.horario_inicio,
+          horario_fim: pedido.horario_fim,
+        },
+
+        endereco: {
+          id: pedido.endereco_id,
+          cep: pedido.cep,
+          logradouro: pedido.logradouro,
+          numero: pedido.numero,
+          bairro: pedido.bairro,
+          cidade_estado: pedido.cidade_estado,
+        },
+
+        itens,
+
+        avaliacao: avaliacoes[0]
+          ? {
+              id: avaliacoes[0].id,
+              nota: Number(avaliacoes[0].nota),
+              comentario: avaliacoes[0].comentario,
+              data_avaliacao: avaliacoes[0].data_avaliacao,
+            }
+          : null,
+
+        /*
+        * Estas etapas representam o progresso atual.
+        * Datas individuais ainda não estão disponíveis porque ainda
+        * não existe uma tabela de histórico de status.
+        */
+        etapas: montarEtapasPedido(pedido.status_aluguel),
+      };
+
+      return res.status(200).json({
+        success: true,
+        data: response,
+      });
+    } catch (error) {
+      console.error("Erro ao buscar detalhes do pedido:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno ao buscar detalhes do pedido.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
     }
   },
 };

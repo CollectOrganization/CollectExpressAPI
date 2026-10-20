@@ -78,6 +78,19 @@ router.get(
   alugueisController.gestaoPedidos,
 );
 
+// Detalhe de um pedido.
+// O controller aplica as regras de propriedade conforme o perfil.
+router.get(
+  "/:id",
+  roleMiddleware([
+    "CONSUMIDOR",
+    "CACAMBEIRO",
+    "ADMIN",
+  ]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  alugueisController.detalhe,
+);
+
 // CACAMBEIRO: atualiza o status do pedido.
 router.patch(
   "/:id/status",
