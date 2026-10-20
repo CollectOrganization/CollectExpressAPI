@@ -12,6 +12,19 @@ const avaliacoesController = require("../controllers/avaliacoesController");
 router.get("/dashboard", authMiddleware, roleMiddleware(['CACAMBEIRO']), cacambeirosController.dashboard);
 router.get("/financeiro", authMiddleware, roleMiddleware(['CACAMBEIRO']), cacambeirosController.financeiro);
 
+// Rotas públicas para consumidores verem os fornecedores
+router.get("/", cacambeirosController.listar);
+//router.get("/:id", cacambeirosController.buscarPorId);
+router.get(
+  "/:id",
+  validationMiddleware(
+    schemas.uuidParam,
+    "params",
+  ),
+  cacambeirosController.buscarPorId,
+);
+
+
 // Rota pública para listar as avaliações de um fornecedor
 /*router.get("/:id_cacambeiro/avaliacoes", avaliacoesController.listarPorCacambeiro);*/
 router.get(
@@ -19,12 +32,6 @@ router.get(
   validationMiddleware(schemas.uuidParam, "params"),
   avaliacoesController.listarPorCacambeiro,
 );
-
-// Rotas públicas para consumidores verem os fornecedores
-router.get("/", cacambeirosController.listar);
-router.get("/:id", cacambeirosController.buscarPorId);
-
-
 
 
 
