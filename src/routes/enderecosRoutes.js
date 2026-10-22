@@ -25,10 +25,7 @@ router.use(authMiddleware);
  * GET /api/enderecos
  * Lista os endereços do usuário autenticado.
  */
-router.get(
-  "/",
-  enderecosController.listar,
-);
+router.get("/", enderecosController.listar,);
 
 /**
  * POST /api/enderecos
@@ -45,7 +42,7 @@ router.post(
  * Atualiza um endereço pertencente ao usuário autenticado.
  */
 router.put(
-  "/:id",
+  "enderecos/:id",
   validationMiddleware(schemas.uuidParam, "params"),
   validationMiddleware(schemas.updateAddress),
   enderecosController.atualizar,
