@@ -628,6 +628,184 @@ const usuariosController = {
       );
     }
   },
+
+  /**
+ * PATCH /api/usuarios/senha
+ *
+ * Altera a senha do usuário autenticado.
+ *
+ * Segurança:
+ * - o usuário é identificado exclusivamente pelo JWT;
+ * - não recebe ID na URL ou no body;
+ * - exige a senha atual;
+ * - invalida todos os access tokens através do token_version;
+ * - revoga todos os refresh tokens;
+ * - invalida códigos de recuperação pendentes.
+ */
+  async alterarSenha(req, res) {
+    try {
+      const usuarioId = req.usuario_id;
+
+      const {
+        senha_atual,
+        nova_senha,
+        confirmar_senha,
+      } = req.body;
+
+      /*
+      * Esta validação também existe no middleware, mas permanece
+      * como proteção adicional da regra de negócio.
+      */
+      if (nova_senha !== confirmar_senha) {
+        return res.status(400).json({
+          success: false,
+          message: "As senhas informadas não são iguais.",
+          code: "PASSWORD_CONFIRMATION_MISMATCH",
+          fields: {
+            confirmar_senha:
+              "A confirmação não corresponde à nova senha.",
+          },
+        });
+      }
+
+      /*
+      * Busca somente o usuário identificado pelo token.
+      * Portanto, ninguém pode alterar a senha de outra conta.
+      */
+      const usuarios = await sql`
+        SELECT
+          id,
+          senha_hash,
+          status
+        FROM usuarios
+        WHERE id = ${usuarioId}
+        LIMIT 1
+      `;
+
+      if (usuarios.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Usuário não encontrado.",
+          code: "USER_NOT_FOUND",
+        });
+      }
+
+      const usuario = usuarios[0];
+
+      /*
+      * Confere a senha atual antes de permitir a alteração.
+      */
+      const senhaAtualValida = await bcrypt.compare(
+        senha_atual,
+        usuario.senha_hash,
+      );
+
+      if (!senhaAtualValida) {
+        return res.status(401).json({
+          success: false,
+          message: "A senha atual está incorreta.",
+          code: "INVALID_CURRENT_PASSWORD",
+          fields: {
+            senha_atual: "A senha atual está incorreta.",
+          },
+        });
+      }
+
+      /*
+      * Impede reutilizar a senha atual.
+      */
+      const mesmaSenha = await bcrypt.compare(
+        nova_senha,
+        usuario.senha_hash,
+      );
+
+      if (mesmaSenha) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "A nova senha deve ser diferente da senha atual.",
+          code: "PASSWORD_REUSE_NOT_ALLOWED",
+          fields: {
+            nova_senha:
+              "Informe uma senha diferente da atual.",
+          },
+        });
+      }
+
+      const novoHash = await bcrypt.hash(nova_senha, 10);
+
+      /*
+      * Uma única instrução SQL realiza:
+      *
+      * 1. alteração da senha;
+      * 2. incremento do token_version;
+      * 3. revogação dos refresh tokens;
+      * 4. invalidação dos códigos de recuperação.
+      *
+      * Se alguma etapa falhar, toda a operação é revertida.
+      */
+      const resultado = await sql`
+        WITH usuario_atualizado AS (
+          UPDATE usuarios
+          SET
+            senha_hash = ${novoHash},
+            token_version = token_version + 1
+          WHERE id = ${usuarioId}
+          RETURNING id
+        ),
+
+        refresh_tokens_revogados AS (
+          UPDATE refresh_tokens rt
+          SET revoked_at = NOW()
+          FROM usuario_atualizado ua
+          WHERE rt.usuario_id = ua.id
+            AND rt.revoked_at IS NULL
+          RETURNING rt.id
+        ),
+
+        recuperacoes_invalidadas AS (
+          UPDATE password_recovery_tokens pr
+          SET used_at = NOW()
+          FROM usuario_atualizado ua
+          WHERE pr.usuario_id = ua.id
+            AND pr.used_at IS NULL
+          RETURNING pr.id
+        )
+
+        SELECT id
+        FROM usuario_atualizado
+      `;
+
+      if (resultado.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Usuário não encontrado.",
+          code: "USER_NOT_FOUND",
+        });
+      }
+
+      /*
+      * O access token usado nesta requisição deixa de funcionar,
+      * pois seu token_version ficou desatualizado.
+      */
+      return res.status(200).json({
+        success: true,
+        message:
+          "Senha alterada com sucesso. Entre novamente para continuar.",
+        data: {
+          requires_login: true,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao alterar senha:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno ao alterar a senha.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
+    }
+  },
 };
 
 module.exports = usuariosController;

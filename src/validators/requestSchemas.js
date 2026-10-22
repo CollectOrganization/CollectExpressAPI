@@ -418,6 +418,41 @@ const schemas = {
       maxLength: 100,
     },
   },
+
+  changePassword: {
+    senha_atual: {
+      required: true,
+      type: "string",
+      minLength: 6,
+      maxLength: 128,
+    },
+    nova_senha: {
+      required: true,
+      type: "string",
+      minLength: 8,
+      maxLength: 128,
+      custom: (value) => {
+        const valid =
+          /[A-Z]/.test(value) &&
+          /[a-z]/.test(value) &&
+          /\d/.test(value);
+
+        return (
+          valid ||
+          "A nova senha deve conter uma letra maiúscula, uma minúscula e um número."
+        );
+      },
+    },
+    confirmar_senha: {
+      required: true,
+      type: "string",
+      minLength: 8,
+      maxLength: 128,
+      custom: (value, body) =>
+        value === body.nova_senha ||
+        "A confirmação da senha não corresponde à nova senha.",
+    },
+  },
 };
 
 module.exports = schemas;

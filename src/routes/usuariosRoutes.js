@@ -5,9 +5,7 @@ const usuariosController = require("../controllers/usuariosController");
 const authMiddleware = require("../middlewares/authMiddleware");
 const roleMiddleware = require("../middlewares/roleMiddleware");
 
-const validationMiddleware = require(
-  "../middlewares/validationMiddleware",
-);
+const validationMiddleware = require("../middlewares/validationMiddleware",);
 
 const schemas = require("../validators/requestSchemas");
 
@@ -36,28 +34,25 @@ router.put(
   usuariosController.updatePerfil,
 );
 
+/**
+ * Somente o proprietário autenticado pode alterar sua senha.
+ *
+ * Não existe parâmetro de usuário na URL para evitar alteração
+ * da senha de terceiros.
+ */
+router.patch(
+  "/senha",
+  authMiddleware,
+  validationMiddleware(schemas.changePassword),
+  usuariosController.alterarSenha,
+);
+
 // Rotas administrativas (ADMIN) - devem vir após /perfil e antes de POST /
 router.get(
   "/",
   authMiddleware,
   roleMiddleware(["ADMIN"]),
   usuariosController.listarUsuarios,
-);
-
-/*
-router.get(
-  "/:id",
-  authMiddleware,
-  roleMiddleware(["ADMIN"]),
-  usuariosController.detalheUsuario,
-);
-*/
-router.get(
-  "/:id",
-  authMiddleware,
-  roleMiddleware(["ADMIN"]),
-  validationMiddleware(schemas.uuidParam, "params"),
-  usuariosController.detalheUsuario,
 );
 
 // Rota: POST /api/usuarios
@@ -81,6 +76,22 @@ router.post(
   roleMiddleware(["ADMIN"]),
   validationMiddleware(schemas.createAdmin),
   usuariosController.criarAdmin,
+);
+
+/*
+router.get(
+  "/:id",
+  authMiddleware,
+  roleMiddleware(["ADMIN"]),
+  usuariosController.detalheUsuario,
+);
+*/
+router.get(
+  "/:id",
+  authMiddleware,
+  roleMiddleware(["ADMIN"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  usuariosController.detalheUsuario,
 );
 
 // Espaço reservado para as próximas rotas:
