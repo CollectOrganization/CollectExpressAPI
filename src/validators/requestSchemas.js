@@ -453,6 +453,24 @@ const schemas = {
         "A confirmação da senha não corresponde à nova senha.",
     },
   },
+
+  /**
+   * PATCH /api/usuarios/:id/status
+   *
+   * Somente ATIVO e SUSPENSO são alvos válidos:
+   * - ATIVO   → aprova um PENDENTE ou reativa um SUSPENSO;
+   * - SUSPENSO → bloqueia um ATIVO ou recusa um PENDENTE.
+   *
+   * PENDENTE não é aceito como alvo: é o estado inicial do
+   * cadastro e só é atribuído pelo próprio fluxo de registro.
+   */
+  changeUserStatus: {
+    status: {
+      required: true,
+      type: "string",
+      enum: ["ATIVO", "SUSPENSO"],
+    },
+  },
 };
 
 module.exports = schemas;

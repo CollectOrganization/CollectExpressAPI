@@ -79,6 +79,22 @@ router.post(
 );
 
 /*
+ * Aprovação e suspensão.
+ *
+ * Colocada antes de `/:id` para deixar explícita a hierarquia
+ * de rotas administrativas, embora o método (PATCH) já evite
+ * conflito com o GET de detalhe.
+ */
+router.patch(
+  "/:id/status",
+  authMiddleware,
+  roleMiddleware(["ADMIN"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  validationMiddleware(schemas.changeUserStatus),
+  usuariosController.alterarStatus,
+);
+
+/*
 router.get(
   "/:id",
   authMiddleware,

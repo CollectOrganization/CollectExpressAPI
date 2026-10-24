@@ -199,6 +199,130 @@ const cacambasController = {
   /**
    * GET /api/cacambas
    *
+   * Catálogo público de caçambas.
+   *
+   * Filtros aplicados obrigatoriamente:
+   * - caçamba marcada como disponível;
+   * - fornecedor (CACAMBEIRO) com status ATIVO.
+   *
+   * Sem o segundo filtro, caçambas de fornecedores PENDENTES ou
+   * SUSPENSOS apareceriam no catálogo — o que geraria checkout
+   * com fornecedores que não podem operar.
+   */
+  async listar(req, res) {
+    try {
+      const page = Math.max(
+        1,
+        parseInt(req.query.page, 10) || 1,
+      );
+
+      const limit = Math.min(
+        100,
+        Math.max(
+          1,
+          parseInt(req.query.limit, 10) || 20,
+        ),
+      );
+
+      const offset = (page - 1) * limit;
+
+      const {
+        tipo_residuo: tipoResiduo,
+        cacambeiro_id: cacambeiroId,
+        search,
+      } = req.query;
+
+      /*
+      * Condições base — sempre aplicadas.
+      *
+      * `u.status = 'ATIVO'` já exclui PENDENTE e SUSPENSO.
+      * `u.tipo_perfil = 'CACAMBEIRO'` é defensivo (o schema
+      * já garante que cacambeiro_id aponta para esse perfil,
+      * mas a checagem evita problemas se a modelagem mudar).
+      */
+      let conditions = sql`
+        WHERE ca.disponivel = TRUE
+          AND u.status = 'ATIVO'
+          AND u.tipo_perfil = 'CACAMBEIRO'
+      `;
+
+      if (tipoResiduo) {
+        conditions = sql`
+          ${conditions}
+          AND ca.tipo_residuo = ${tipoResiduo}
+        `;
+      }
+
+      if (cacambeiroId) {
+        conditions = sql`
+          ${conditions}
+          AND ca.cacambeiro_id = ${cacambeiroId}
+        `;
+      }
+
+      const searchTerm = search?.trim();
+
+      if (searchTerm && searchTerm.length >= 3) {
+        const pattern = `%${searchTerm}%`;
+
+        conditions = sql`
+          ${conditions}
+          AND ca.nome ILIKE ${pattern}
+        `;
+      }
+
+      const countResult = await sql`
+        SELECT COUNT(*)::int AS total
+        FROM cacambas ca
+        INNER JOIN usuarios u
+          ON u.id = ca.cacambeiro_id
+        ${conditions}
+      `;
+
+      const total = countResult[0].total;
+      const totalPages = Math.ceil(total / limit);
+
+      const cacambas = await sql`
+        SELECT ca.*
+        FROM cacambas ca
+        INNER JOIN usuarios u
+          ON u.id = ca.cacambeiro_id
+        ${conditions}
+        ORDER BY ca.criado_em DESC
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `;
+
+      return res.status(200).json({
+        success: true,
+        data: cacambas,
+
+        // Compatibilidade com clientes anteriores.
+        total,
+        page,
+        totalPages,
+
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao listar caçambas:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno ao listar caçambas.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
+    }
+  },
+  //Metodo descontinuado
+  /**
+   * GET /api/cacambas
+   *
    * Lista as caçambas disponíveis no marketplace.
    *
    * Query params:
@@ -208,7 +332,7 @@ const cacambasController = {
    * - search: pesquisa pelo nome, com no mínimo 3 caracteres.
    *
    * Esta rota é pública.
-   */
+   *
   async listar(req, res) {
     try {
       const parsedPage = Number.parseInt(req.query.page, 10);
@@ -276,7 +400,7 @@ const cacambasController = {
       /*
        * Código PostgreSQL 22P02:
        * valor inválido para UUID ou outro tipo de dado.
-       */
+       *
       if (error.code === "22P02") {
         return sendError(
           res,
@@ -293,7 +417,7 @@ const cacambasController = {
         "INTERNAL_SERVER_ERROR",
       );
     }
-  },
+  },*/
 
   /**
    * GET /api/cacambas/:id

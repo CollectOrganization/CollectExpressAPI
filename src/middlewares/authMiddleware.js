@@ -64,6 +64,39 @@ async function authMiddleware(req, res, next) {
       });
     }
 
+    /*
+    * A verificação de `token_version` vem ANTES do `status` de
+    * propósito.
+    *
+    * Motivo: toda suspensão incrementa `token_version`. Portanto,
+    * qualquer token emitido antes da suspensão está estruturalmente
+    * inválido. Retornamos 401 (sessão encerrada) para que o cliente
+    * saiba que precisa reautenticar.
+    *
+    * O 403 USER_NOT_ACTIVE só aparece quando um usuário suspenso
+    * ainda consegue apresentar um token válido — caso raro, mas
+    * possível (ex.: conta suspensa manualmente no banco sem
+    * incrementar `token_version`).
+    */
+    if (
+      Number(decoded.token_version) !==
+      Number(user.token_version)
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Sua sessão foi encerrada. Entre novamente.",
+        code: "SESSION_INVALIDATED",
+      });
+    }
+
+    if (user.status !== "ATIVO") {
+      return res.status(403).json({
+        success: false,
+        message: "Usuário sem acesso ao sistema.",
+        code: "USER_NOT_ACTIVE",
+      });
+    }
+    /*
     if (user.status !== "ATIVO") {
       return res.status(403).json({
         success: false,
@@ -81,7 +114,7 @@ async function authMiddleware(req, res, next) {
         message: "Sua sessão foi encerrada. Entre novamente.",
         code: "SESSION_INVALIDATED",
       });
-    }
+    }*/
 
     req.usuario_id = user.id;
     req.tipo_perfil = user.tipo_perfil;

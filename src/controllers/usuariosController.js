@@ -393,76 +393,82 @@ const usuariosController = {
   /**
    * GET /api/usuarios
    *
-   * Lista usuários para administradores.
+   * Lista usuários para o ADMIN.
    *
    * Query params:
-   * - page: página atual;
-   * - tipo_perfil: CONSUMIDOR, CACAMBEIRO ou ADMIN;
-   * - search: busca por nome ou e-mail.
+   * - page: página atual (padrão 1)
+   * - limit: itens por página (padrão 20, máx. 100)
+   * - tipo_perfil: CONSUMIDOR | CACAMBEIRO | ADMIN
+   * - status: PENDENTE | ATIVO | SUSPENSO
+   * - search: mínimo 3 caracteres, busca por nome ou e-mail
    */
   async listarUsuarios(req, res) {
     try {
       const page = Math.max(
         1,
-        Number.parseInt(req.query.page, 10) || 1,
+        parseInt(req.query.page, 10) || 1,
       );
 
-      const limit = 20;
+      const limit = Math.min(
+        100,
+        Math.max(
+          1,
+          parseInt(req.query.limit, 10) || 20,
+        ),
+      );
+
       const offset = (page - 1) * limit;
 
-      const tipoPerfil =
-        req.query.tipo_perfil?.trim() || null;
+      const {
+        tipo_perfil: tipoPerfil,
+        status,
+        search,
+      } = req.query;
 
-      const search = req.query.search?.trim() || null;
+      let conditions = sql`WHERE 1 = 1`;
 
-      const perfisPermitidos = [
-        "CONSUMIDOR",
-        "CACAMBEIRO",
-        "ADMIN",
-      ];
-
-      if (
-        tipoPerfil &&
-        !perfisPermitidos.includes(tipoPerfil)
-      ) {
-        return sendError(
-          res,
-          400,
-          "Filtro de perfil inválido.",
-          "INVALID_PROFILE_FILTER",
-          {
-            tipo_perfil:
-              "Use CONSUMIDOR, CACAMBEIRO ou ADMIN.",
-          },
-        );
+      if (tipoPerfil) {
+        conditions = sql`
+          ${conditions}
+          AND tipo_perfil = ${tipoPerfil}
+        `;
       }
 
-      const searchPattern =
-        search && search.length >= 3
-          ? `%${search}%`
-          : null;
+      if (status) {
+        conditions = sql`
+          ${conditions}
+          AND status = ${status}
+        `;
+      }
 
-      /**
-       * Os filtros opcionais são aplicados sem concatenar SQL.
-       * Isso mantém a consulta parametrizada.
-       */
+      const searchTerm = search?.trim();
+
+      if (searchTerm && searchTerm.length >= 3) {
+        const searchPattern = `%${searchTerm}%`;
+
+        conditions = sql`
+          ${conditions}
+          AND (
+            nome_completo ILIKE ${searchPattern}
+            OR email ILIKE ${searchPattern}
+          )
+        `;
+      }
+
       const countResult = await sql`
         SELECT COUNT(*)::int AS total
         FROM usuarios
-        WHERE (
-          ${tipoPerfil}::text IS NULL
-          OR tipo_perfil::text = ${tipoPerfil}
-        )
-        AND (
-          ${searchPattern}::text IS NULL
-          OR nome_completo ILIKE ${searchPattern}
-          OR email ILIKE ${searchPattern}
-        )
+        ${conditions}
       `;
 
       const total = countResult[0].total;
       const totalPages = Math.ceil(total / limit);
 
+      /*
+      * `status` passou a ser incluído no SELECT — antes estava
+      * ausente e era a razão do filtro `select(.status ...)` do
+      * jq nunca casar.
+      */
       const usuarios = await sql`
         SELECT
           id,
@@ -474,48 +480,64 @@ const usuariosController = {
           status,
           criado_em
         FROM usuarios
-        WHERE (
-          ${tipoPerfil}::text IS NULL
-          OR tipo_perfil::text = ${tipoPerfil}
-        )
-        AND (
-          ${searchPattern}::text IS NULL
-          OR nome_completo ILIKE ${searchPattern}
-          OR email ILIKE ${searchPattern}
-        )
+        ${conditions}
         ORDER BY criado_em DESC
         LIMIT ${limit}
         OFFSET ${offset}
       `;
 
-      const data = usuarios.map(serializarUsuario);
+      const usuariosMascarados = usuarios.map((usuario) => ({
+        ...usuario,
+        documento: mascararDocumento(usuario.documento),
+      }));
 
-      return sendSuccess(
-        res,
-        {
-          items: data,
-          pagination: {
-            total,
-            page,
-            per_page: limit,
-            total_pages: totalPages,
-          },
+      /*
+      * Compatibilidade temporária: alguns testes e scripts antigos
+      * leem `total`, `page` e `totalPages` na raiz.
+      *
+      * Também expomos `pagination` para o cliente novo (Flutter),
+      * que consome uma estrutura mais explícita.
+      *
+      * Quando todo o consumo migrar para `pagination`, remover
+      * os três campos da raiz.
+      */
+      return res.status(200).json({
+        success: true,
+        data: usuariosMascarados,
+
+        // Contrato legado
+        total,
+        page,
+        totalPages,
+
+        // Contrato novo
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages,
         },
-        200,
-        "Usuários carregados com sucesso.",
-      );
-    } catch (error) {
-      console.error(
-        "Erro ao listar usuários:",
-        error,
-      );
+      });
+      /* ----- Trecho pausado. Acima temos uma explicacao sobre
+      return res.status(200).json({
+        success: true,
+        data: usuariosMascarados,
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages,
+        },
+      });*/
 
-      return sendError(
-        res,
-        500,
-        "Erro interno ao listar usuários.",
-        "INTERNAL_SERVER_ERROR",
-      );
+    } catch (error) {
+      console.error("Erro ao listar usuários:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno ao listar usuários.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
     }
   },
 
@@ -802,6 +824,189 @@ const usuariosController = {
       return res.status(500).json({
         success: false,
         message: "Erro interno ao alterar a senha.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
+    }
+  },
+
+  /**
+   * PATCH /api/usuarios/:id/status
+   *
+   * Aprovação e suspensão de usuários pelo ADMIN.
+   *
+   * Regras de negócio:
+   * - apenas ADMIN pode chamar (garantido na rota);
+   * - o ADMIN não pode alterar o próprio status;
+   * - o ADMIN não pode alterar o status de outro ADMIN;
+   * - o usuário alvo precisa existir;
+   * - se o alvo já estiver no status desejado → 409;
+   * - ao SUSPENDER:
+   *     - incrementa token_version → access tokens atuais ficam inválidos;
+   *     - revoga todos os refresh tokens;
+   *     - invalida códigos de recuperação pendentes;
+   * - ao APROVAR/REATIVAR:
+   *     - não mexe em sessões (o usuário estava bloqueado e não tinha sessão ativa).
+   */
+  async alterarStatus(req, res) {
+    try {
+      const adminId = req.usuario_id;
+      const { id } = req.params;
+      const { status } = req.body;
+
+      /*
+      * Bloqueio de autossuspensão: mesmo um ADMIN não deve conseguir
+      * se trancar fora do sistema por acidente.
+      */
+      if (adminId === id) {
+        return res.status(403).json({
+          success: false,
+          message: "Você não pode alterar o status da sua própria conta.",
+          code: "SELF_STATUS_CHANGE_NOT_ALLOWED",
+        });
+      }
+
+      /*
+      * Busca o alvo antes do UPDATE para distinguir com precisão:
+      * - usuário inexistente;
+      * - alvo é outro ADMIN;
+      * - alvo já está no status desejado.
+      *
+      * Isso evita que a operação rode e depois tenhamos que
+      * adivinhar qual foi o motivo da falha.
+      */
+      const alvos = await sql`
+        SELECT
+          id,
+          nome_completo,
+          email,
+          tipo_perfil,
+          status
+        FROM usuarios
+        WHERE id = ${id}
+        LIMIT 1
+      `;
+
+      if (alvos.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Usuário não encontrado.",
+          code: "USER_NOT_FOUND",
+        });
+      }
+
+      const alvo = alvos[0];
+
+      /*
+      * Administradores gerenciam contas, não uns aos outros.
+      * Se um dia houver `SUPER_ADMIN`, essa regra deve ser
+      * revista apenas para esse nível.
+      */
+      if (alvo.tipo_perfil === "ADMIN") {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Administradores não podem alterar o status de outros administradores.",
+          code: "ADMIN_STATUS_CHANGE_NOT_ALLOWED",
+        });
+      }
+
+      /*
+      * Evita operação vazia. Devolve 409 Conflict porque o pedido
+      * está bem formado, mas o estado atual já é o esperado.
+      */
+      if (alvo.status === status) {
+        return res.status(409).json({
+          success: false,
+          message: `O usuário já está com o status ${status}.`,
+          code: "USER_STATUS_UNCHANGED",
+        });
+      }
+
+      /*
+      * Uma única instrução SQL aplica todas as mudanças:
+      * - status;
+      * - token_version (apenas ao suspender);
+      * - revogação dos refresh tokens (apenas ao suspender);
+      * - invalidação de códigos de recuperação (apenas ao suspender).
+      *
+      * O CASE WHEN ${status}::text = 'SUSPENSO' desliga as ações
+      * de sessão quando o alvo é ATIVO, mantendo a transação
+      * correta em ambos os fluxos.
+      */
+      const resultado = await sql`
+        WITH atualizado AS (
+          UPDATE usuarios
+          SET
+            status = ${status},
+            token_version =
+              token_version
+              + CASE WHEN ${status}::text = 'SUSPENSO'
+                    THEN 1 ELSE 0 END
+          WHERE id = ${id}
+          RETURNING
+            id,
+            nome_completo,
+            email,
+            tipo_perfil,
+            status,
+            token_version
+        ),
+
+        refresh_tokens_revogados AS (
+          UPDATE refresh_tokens rt
+          SET revoked_at = NOW()
+          FROM atualizado a
+          WHERE rt.usuario_id = a.id
+            AND rt.revoked_at IS NULL
+            AND ${status}::text = 'SUSPENSO'
+          RETURNING rt.id
+        ),
+
+        recuperacoes_invalidadas AS (
+          UPDATE password_recovery_tokens pr
+          SET used_at = NOW()
+          FROM atualizado a
+          WHERE pr.usuario_id = a.id
+            AND pr.used_at IS NULL
+            AND ${status}::text = 'SUSPENSO'
+          RETURNING pr.id
+        )
+
+        SELECT * FROM atualizado
+      `;
+
+      if (resultado.length === 0) {
+        /*
+        * Defensivo: o pré-check acima já garante que existe,
+        * mas se houver corrida com deleção, retornamos 404.
+        */
+        return res.status(404).json({
+          success: false,
+          message: "Usuário não encontrado.",
+          code: "USER_NOT_FOUND",
+        });
+      }
+
+      /*
+      * TODO (opcional): disparar e-mail/SMS avisando sobre a
+      * aprovação ou suspensão. Ex.: notificationService.sendAccountStatusEmail().
+      * Manter como fire-and-forget para não bloquear a resposta.
+      */
+
+      return res.status(200).json({
+        success: true,
+        message:
+          status === "ATIVO"
+            ? "Usuário aprovado/reativado com sucesso."
+            : "Usuário suspenso com sucesso.",
+        data: resultado[0],
+      });
+    } catch (error) {
+      console.error("Erro ao alterar status do usuário:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno ao alterar o status do usuário.",
         code: "INTERNAL_SERVER_ERROR",
       });
     }
