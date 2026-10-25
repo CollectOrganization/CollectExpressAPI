@@ -87,7 +87,8 @@ function isAllowedOrigin(origin) {
   if (
     allowedOrigins.includes(origin) ||
     origin.startsWith("http://localhost:") ||
-    origin.startsWith("http://127.0.0.1:")
+    origin.startsWith("http://127.0.0.1:") ||
+    origin.endsWith(".onrender.com")
   ) {
     return true;
   }
@@ -177,6 +178,17 @@ app.use(
  * Rota raiz.
  */
 app.get("/", (req, res) => {
+  return res.status(200).json({
+    success: true,
+    data: {
+      status: "ok",
+      message: "CollectExpress API online",
+      health: "/api/health",
+    },
+  });
+});
+
+app.get("/api", (req, res) => {
   return res.status(200).json({
     success: true,
     data: {
