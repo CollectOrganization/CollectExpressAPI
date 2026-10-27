@@ -22,6 +22,7 @@ const carrinhoRoutes = require("./routes/carrinhoRoutes");
 const alugueisRoutes = require("./routes/alugueisRoutes");
 const avaliacoesRoutes = require("./routes/avaliacoesRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const materiaisRoutes = require("./routes/materiaisRoutes");
 
 // Cria a limpeza dos tokens
 const {startTokenCleanup,} = require("./services/tokenCleanupService");
@@ -206,6 +207,7 @@ app.use("/api/carrinho", carrinhoRoutes);
 app.use("/api/alugueis", alugueisRoutes);
 app.use("/api/avaliacoes", avaliacoesRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/materiais", materiaisRoutes);
 
 /**
  * Estes middlewares devem permanecer depois de todas as rotas.

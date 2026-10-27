@@ -239,6 +239,23 @@ CREATE TABLE IF NOT EXISTS login_attempts (
   first_attempt BIGINT NOT NULL
 );
 
+-- Materiais recicláveis
+CREATE TABLE IF NOT EXISTS materiais_reciclaveis (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  nome VARCHAR(100) NOT NULL,
+  descricao TEXT,
+  icone_url VARCHAR(500),
+  tipos_aceitos TEXT[] NOT NULL DEFAULT '{}',
+  tipos_nao_aceitos TEXT[] NOT NULL DEFAULT '{}',
+  impacto_energia INTEGER NOT NULL DEFAULT 0,
+  impacto_co2 INTEGER NOT NULL DEFAULT 0,
+  tempo_decomposicao VARCHAR(50),
+  criado_em TIMESTAMP NOT NULL DEFAULT NOW(),
+  CONSTRAINT materiais_reciclaveis_nome_unique UNIQUE (nome)
+);
+CREATE INDEX IF NOT EXISTS idx_materiais_reciclaveis_nome
+ON materiais_reciclaveis(nome);
+
 
 -- ============================================
 -- INDEXES

@@ -160,6 +160,132 @@ async function seed() {
       RESTART IDENTITY CASCADE
     `;
 
+    /**
+     * Materiais exibidos na tela "Detalhes do Material".
+     * Os valores de impacto são aproximados e acadêmicos.
+     */
+    const materiais = [
+      {
+        nome: "Garrafas PET",
+        descricao:
+          "O plástico PET leva até 400 anos para se decompor. " +
+          "Reciclar transforma resíduos em novos produtos, reduzindo a poluição urbana.",
+        tipos_aceitos: [
+          "Garrafas de água e refrigerante",
+          "Frascos de shampoo e cosméticos",
+          "Embalagens de limpeza transparentes",
+          "Recipientes alimentícios de PET",
+        ],
+        tipos_nao_aceitos: [
+          "Plásticos metalizados (snack packs)",
+          "Embalagens de óleo lubrificante",
+          "Brinquedos ou plásticos rígidos mistos",
+        ],
+        impacto_energia: 70,
+        impacto_co2: 60,
+        tempo_decomposicao: "400 anos",
+      },
+      {
+        nome: "Alumínio",
+        descricao:
+          "Reciclar alumínio economiza até 95% da energia usada na produção primária. " +
+          "Uma lata pode ser reciclada infinitas vezes.",
+        tipos_aceitos: [
+          "Latas de refrigerante e cerveja",
+          "Latas de conserva",
+          "Papel alumínio limpo",
+          "Tampas e lacres",
+        ],
+        tipos_nao_aceitos: [
+          "Latas com restos de comida",
+          "Aerossóis com conteúdo",
+          "Alumínio misturado com plástico",
+        ],
+        impacto_energia: 95,
+        impacto_co2: 80,
+        tempo_decomposicao: "200 anos",
+      },
+      {
+        nome: "Papel e Papelão",
+        descricao:
+          "A reciclagem de papel reduz o desmatamento e o consumo de água. " +
+          "Mantém a fibra em uso por vários ciclos.",
+        tipos_aceitos: [
+          "Caixas de papelão",
+          "Jornais e revistas",
+          "Papel de escritório",
+          "Embalagens longa vida (Tetra Pak)",
+        ],
+        tipos_nao_aceitos: [
+          "Papel higiênico e toalhas usadas",
+          "Papel plastificado ou engordurado",
+          "Fita adesiva em excesso",
+        ],
+        impacto_energia: 60,
+        impacto_co2: 55,
+        tempo_decomposicao: "6 meses",
+      },
+      {
+        nome: "Vidro",
+        descricao:
+          "O vidro é 100% reciclável e pode ser reaproveitado sem perder qualidade. " +
+          "A reciclagem reduz a extração de areia.",
+        tipos_aceitos: [
+          "Garrafas de vidro",
+          "Potes e conservas",
+          "Frascos de perfume e cosméticos",
+        ],
+        tipos_nao_aceitos: [
+          "Espelhos e vidros planos",
+          "Lâmpadas e tubos de TV",
+          "Vidro temperado e pirex",
+        ],
+        impacto_energia: 30,
+        impacto_co2: 40,
+        tempo_decomposicao: "Indeterminado",
+      },
+      {
+        nome: "Eletrônicos",
+        descricao:
+          "Equipamentos eletrônicos contêm metais valiosos e substâncias tóxicas. " +
+          "A destinação correta evita contaminação do solo e da água.",
+        tipos_aceitos: [
+          "Celulares e tablets",
+          "Computadores e notebooks",
+          "Cabos, carregadores e periféricos",
+          "Eletroportáteis",
+        ],
+        tipos_nao_aceitos: [
+          "Baterias estufadas ou danificadas",
+          "Televisores de tubo (sem triagem)",
+          "Lâmpadas fluorescentes",
+        ],
+        impacto_energia: 75,
+        impacto_co2: 65,
+        tempo_decomposicao: "1000 anos",
+      },
+      {
+        nome: "Óleo de Cozinha",
+        descricao:
+          "Um litro de óleo pode contaminar até 25 mil litros de água. " +
+          "A coleta transforma o óleo em biodiesel e sabão.",
+        tipos_aceitos: [
+          "Óleo de fritura usado",
+          "Azeite e gordura vegetal",
+        ],
+        tipos_nao_aceitos: [
+          "Óleo de motor ou industrial",
+          "Óleo com água ou detergente",
+          "Graxa automotiva",
+        ],
+        impacto_energia: 50,
+        impacto_co2: 45,
+        tempo_decomposicao: "Indeterminado",
+      },
+    ];
+
+    console.log("Gravando informacoes para Parceiros reciclagem...");
+
     // ─────────────────────────────────────────────
     // 1. Categorias
     // ─────────────────────────────────────────────
@@ -428,7 +554,39 @@ async function seed() {
     `;
 
     // ─────────────────────────────────────────────
-    // 8. Resumo final
+    // 8. Parceiro reciclagem finalizado
+    // ─────────────────────────────────────────────
+    for (const m of materiais) {
+      await sql`
+        INSERT INTO materiais_reciclaveis (
+          nome,
+          descricao,
+          tipos_aceitos,
+          tipos_nao_aceitos,
+          impacto_energia,
+          impacto_co2,
+          tempo_decomposicao
+        )
+        VALUES (
+          ${m.nome},
+          ${m.descricao},
+          ${m.tipos_aceitos},
+          ${m.tipos_nao_aceitos},
+          ${m.impacto_energia},
+          ${m.impacto_co2},
+          ${m.tempo_decomposicao}
+        )
+        ON CONFLICT (nome) DO NOTHING
+      `;
+    }
+
+    const total = await sql`
+      SELECT COUNT(*)::int AS total
+      FROM materiais_reciclaveis
+    `;
+
+    // ─────────────────────────────────────────────
+    // 9. Resumo final
     // ─────────────────────────────────────────────
     console.log("");
     console.log("✅ Seed concluído com sucesso.");
@@ -454,8 +612,10 @@ async function seed() {
     console.log(`Categorias criadas: ${categoriasRows.map((c) => c.nome).join(", ")}`);
     console.log(`Caçambas do fornecedor ATIVO: ${cacambasCriadas.length}`);
     console.log("");
+    console.log(`Materiais de Parceiros reciclagem no banco: ${total[0].total}`);
     process.exit(0);
   } catch (error) {
+    console.error("❌ Erro ao popular materiais:", error);
     console.error("❌ Erro ao rodar seed:", error);
     process.exit(1);
   }
