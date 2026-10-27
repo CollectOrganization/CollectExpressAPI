@@ -13,6 +13,7 @@ const {
 } = require("./middlewares/errorMiddleware");
 
 // Importação das rotas
+
 const authRoutes = require("./routes/authRoutes");
 const usuariosRoutes = require("./routes/usuariosRoutes");
 const cacambasRoutes = require("./routes/cacambasRoutes");
@@ -23,6 +24,8 @@ const alugueisRoutes = require("./routes/alugueisRoutes");
 const avaliacoesRoutes = require("./routes/avaliacoesRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const materiaisRoutes = require("./routes/materiaisRoutes");
+const parceirosRoutes = require("./routes/parceirosRoutes");
+const coletasRoutes = require("./routes/coletasRoutes");
 
 // Cria a limpeza dos tokens
 const {startTokenCleanup,} = require("./services/tokenCleanupService");
@@ -82,7 +85,12 @@ function isAllowedOrigin(origin) {
     return true;
   }
 
-  if (allowedOrigins.includes(origin)) {
+  if (
+    allowedOrigins.includes(origin) ||
+    origin.startsWith("http://localhost:") ||
+    origin.startsWith("http://127.0.0.1:") ||
+    origin.endsWith(".onrender.com")
+  ) {
     return true;
   }
 
@@ -181,6 +189,17 @@ app.get("/", (req, res) => {
   });
 });
 
+app.get("/api", (req, res) => {
+  return res.status(200).json({
+    success: true,
+    data: {
+      status: "ok",
+      message: "CollectExpress API online",
+      health: "/api/health",
+    },
+  });
+});
+
 /**
  * Health check.
  */
@@ -208,6 +227,8 @@ app.use("/api/alugueis", alugueisRoutes);
 app.use("/api/avaliacoes", avaliacoesRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/materiais", materiaisRoutes);
+app.use("/api/parceiros", parceirosRoutes);
+app.use("/api/coletas", coletasRoutes);
 
 /**
  * Estes middlewares devem permanecer depois de todas as rotas.
@@ -222,7 +243,7 @@ app.use(errorMiddleware);
 /**
  * Inicialização do servidor.
  */
-const PORT = Number(process.env.PORT) || 3001;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Inicializa o token cleanup
 startTokenCleanup();
