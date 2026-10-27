@@ -1,4 +1,1023 @@
+const bcrypt = require("bcryptjs");
+
 const sql = require("../config/db");
+const {
+  sendSuccess,
+  sendError,
+} = require("../utils/apiResponse");
+
+/**
+ * Remove caracteres não numéricos.
+ */
+function apenasDigitos(value) {
+  return value?.replace(/\D/g, "") ?? "";
+}
+
+/**
+ * Mascara CPF ou CNPJ antes de retornar ao frontend.
+ *
+ * CPF:  ***.***.789-00
+ * CNPJ: **.***.678/0001-00
+ */
+function mascararDocumento(documento) {
+  if (!documento) return null;
+
+  const numeros = apenasDigitos(documento);
+
+  if (numeros.length === 11) {
+    return (
+      `***.***.${numeros.substring(6, 9)}` +
+      `-${numeros.substring(9, 11)}`
+    );
+  }
+
+  if (numeros.length === 14) {
+    return (
+      `**.***.${numeros.substring(5, 8)}` +
+      `/${numeros.substring(8, 12)}` +
+      `-${numeros.substring(12, 14)}`
+    );
+  }
+
+  return "***";
+}
+
+/**
+ * Prepara um usuário para ser enviado ao frontend.
+ *
+ * O objeto retornado nunca contém senha_hash ou documento completo.
+ */
+function serializarUsuario(usuario) {
+  return {
+    ...usuario,
+    documento: mascararDocumento(usuario.documento),
+  };
+}
+
+/**
+ * Busca o perfil completo do usuário.
+ *
+ * Se o perfil for CACAMBEIRO, inclui também os dados específicos
+ * existentes na tabela detalhes_cacambeiro.
+ */
+async function buscarPerfilCompleto(usuarioId) {
+  const usuarios = await sql`
+    SELECT
+      id,
+      nome_completo,
+      email,
+      tipo_perfil,
+      documento,
+      telefone,
+      status,
+      criado_em
+    FROM usuarios
+    WHERE id = ${usuarioId}
+  `;
+
+  if (usuarios.length === 0) {
+    return null;
+  }
+
+  const usuario = serializarUsuario(usuarios[0]);
+
+  if (usuario.tipo_perfil === "CACAMBEIRO") {
+    const detalhes = await sql`
+      SELECT
+        horario_inicio,
+        horario_fim,
+        raio_entrega_km,
+        taxa_entrega
+      FROM detalhes_cacambeiro
+      WHERE usuario_id = ${usuarioId}
+    `;
+
+    usuario.detalhes_cacambeiro =
+      detalhes.length > 0 ? detalhes[0] : null;
+  }
+
+  return usuario;
+}
+
+/**
+ * Traduz erros conhecidos do PostgreSQL em respostas de negócio.
+ *
+ * Retorna true quando o erro já foi tratado.
+ */
+function tratarErroDeUnicidade(error, res) {
+  if (error.code !== "23505") {
+    return false;
+  }
+
+  const constraint = error.constraint ?? "";
+  const detail = error.detail ?? "";
+
+  if (
+    constraint.includes("email") ||
+    detail.includes("email")
+  ) {
+    sendError(
+      res,
+      409,
+      "Este e-mail já está cadastrado.",
+      "EMAIL_ALREADY_EXISTS",
+      {
+        email: "Este e-mail já está cadastrado.",
+      },
+    );
+
+    return true;
+  }
+
+  if (
+    constraint.includes("documento") ||
+    detail.includes("documento")
+  ) {
+    sendError(
+      res,
+      409,
+      "Este documento já está cadastrado.",
+      "DOCUMENT_ALREADY_EXISTS",
+      {
+        documento: "Este documento já está cadastrado.",
+      },
+    );
+
+    return true;
+  }
+
+  sendError(
+    res,
+    409,
+    "Já existe um registro com estes dados.",
+    "DUPLICATE_RECORD",
+  );
+
+  return true;
+}
+
+const usuariosController = {
+  /**
+   * GET /api/usuarios/perfil
+   *
+   * Retorna o perfil do usuário autenticado.
+   * O usuário é identificado exclusivamente pelo JWT.
+   */
+  async getPerfil(req, res) {
+    try {
+      const usuario = await buscarPerfilCompleto(
+        req.usuario_id,
+      );
+
+      if (!usuario) {
+        return sendError(
+          res,
+          404,
+          "Usuário não encontrado.",
+          "USER_NOT_FOUND",
+        );
+      }
+
+      return sendSuccess(
+        res,
+        usuario,
+        200,
+        "Perfil carregado com sucesso.",
+      );
+    } catch (error) {
+      console.error("Erro ao buscar perfil:", error);
+
+      return sendError(
+        res,
+        500,
+        "Erro interno ao buscar o perfil.",
+        "INTERNAL_SERVER_ERROR",
+      );
+    }
+  },
+
+  /**
+   * PUT /api/usuarios/perfil
+   *
+   * Atualiza somente os campos permitidos:
+   * - nome_completo;
+   * - telefone.
+   *
+   * A validação de formato é realizada pelo
+   * validationMiddleware antes deste controller.
+   */
+  async updatePerfil(req, res) {
+    try {
+      const usuarioId = req.usuario_id;
+
+      const nomeCompleto =
+        req.body.nome_completo !== undefined
+          ? req.body.nome_completo.trim()
+          : null;
+
+      const telefone =
+        req.body.telefone !== undefined
+          ? apenasDigitos(req.body.telefone)
+          : null;
+
+      /**
+       * COALESCE mantém o valor atual quando o campo não foi
+       * enviado na requisição.
+       */
+      const resultado = await sql`
+        UPDATE usuarios
+        SET
+          nome_completo = COALESCE(
+            ${nomeCompleto},
+            nome_completo
+          ),
+          telefone = COALESCE(
+            ${telefone},
+            telefone
+          )
+        WHERE id = ${usuarioId}
+        RETURNING id
+      `;
+
+      if (resultado.length === 0) {
+        return sendError(
+          res,
+          404,
+          "Usuário não encontrado.",
+          "USER_NOT_FOUND",
+        );
+      }
+
+      const usuario = await buscarPerfilCompleto(usuarioId);
+
+      return sendSuccess(
+        res,
+        usuario,
+        200,
+        "Perfil atualizado com sucesso.",
+      );
+    } catch (error) {
+      console.error("Erro ao atualizar perfil:", error);
+
+      return sendError(
+        res,
+        500,
+        "Erro interno ao atualizar o perfil.",
+        "INTERNAL_SERVER_ERROR",
+      );
+    }
+  },
+
+  /**
+   * POST /api/usuarios/admin
+   *
+   * Cria um administrador.
+   *
+   * Segurança:
+   * - a rota deve usar authMiddleware;
+   * - a rota deve exigir roleMiddleware(["ADMIN"]);
+   * - o perfil é definido como ADMIN no backend;
+   * - o frontend não pode escolher o tipo do perfil.
+   */
+  async criarAdmin(req, res) {
+    try {
+      const {
+        nome_completo,
+        email,
+        senha,
+        documento,
+        telefone,
+      } = req.body;
+
+      const nomeNormalizado = nome_completo.trim();
+      const emailNormalizado = email
+        .trim()
+        .toLowerCase();
+
+      const documentoNormalizado =
+        apenasDigitos(documento);
+
+      const telefoneNormalizado =
+        apenasDigitos(telefone);
+
+      /**
+       * Defesa adicional.
+       *
+       * A validação principal da senha é executada pelo schema
+       * createAdmin, mas o controller preserva a regra crítica.
+       */
+      const senhaForte =
+        senha.length >= 8 &&
+        /[A-Z]/.test(senha) &&
+        /[a-z]/.test(senha) &&
+        /\d/.test(senha);
+
+      if (!senhaForte) {
+        return sendError(
+          res,
+          400,
+          "A senha não atende aos requisitos de segurança.",
+          "WEAK_PASSWORD",
+          {
+            senha:
+              "Use pelo menos 8 caracteres, uma letra maiúscula, uma minúscula e um número.",
+          },
+        );
+      }
+
+      const senhaHash = await bcrypt.hash(senha, 10);
+
+      const resultado = await sql`
+        INSERT INTO usuarios (
+          id,
+          nome_completo,
+          email,
+          senha_hash,
+          tipo_perfil,
+          documento,
+          telefone,
+          status,
+          criado_em
+        )
+        VALUES (
+          gen_random_uuid(),
+          ${nomeNormalizado},
+          ${emailNormalizado},
+          ${senhaHash},
+          'ADMIN',
+          ${documentoNormalizado},
+          ${telefoneNormalizado},
+          'ATIVO',
+          NOW()
+        )
+        RETURNING
+          id,
+          nome_completo,
+          email,
+          tipo_perfil,
+          documento,
+          telefone,
+          status,
+          criado_em
+      `;
+
+      const administrador = serializarUsuario(
+        resultado[0],
+      );
+
+      return sendSuccess(
+        res,
+        administrador,
+        201,
+        "Administrador cadastrado com sucesso.",
+      );
+    } catch (error) {
+      if (tratarErroDeUnicidade(error, res)) {
+        return;
+      }
+
+      console.error(
+        "Erro ao criar administrador:",
+        error,
+      );
+
+      return sendError(
+        res,
+        500,
+        "Erro interno ao criar o administrador.",
+        "INTERNAL_SERVER_ERROR",
+      );
+    }
+  },
+
+  /**
+   * GET /api/usuarios
+   *
+   * Lista usuários para o ADMIN.
+   *
+   * Query params:
+   * - page: página atual (padrão 1)
+   * - limit: itens por página (padrão 20, máx. 100)
+   * - tipo_perfil: CONSUMIDOR | CACAMBEIRO | ADMIN
+   * - status: PENDENTE | ATIVO | SUSPENSO
+   * - search: mínimo 3 caracteres, busca por nome ou e-mail
+   */
+  async listarUsuarios(req, res) {
+    try {
+      const page = Math.max(
+        1,
+        parseInt(req.query.page, 10) || 1,
+      );
+
+      const limit = Math.min(
+        100,
+        Math.max(
+          1,
+          parseInt(req.query.limit, 10) || 20,
+        ),
+      );
+
+      const offset = (page - 1) * limit;
+
+      const {
+        tipo_perfil: tipoPerfil,
+        status,
+        search,
+      } = req.query;
+
+      let conditions = sql`WHERE 1 = 1`;
+
+      if (tipoPerfil) {
+        conditions = sql`
+          ${conditions}
+          AND tipo_perfil = ${tipoPerfil}
+        `;
+      }
+
+      if (status) {
+        conditions = sql`
+          ${conditions}
+          AND status = ${status}
+        `;
+      }
+
+      const searchTerm = search?.trim();
+
+      if (searchTerm && searchTerm.length >= 3) {
+        const searchPattern = `%${searchTerm}%`;
+
+        conditions = sql`
+          ${conditions}
+          AND (
+            nome_completo ILIKE ${searchPattern}
+            OR email ILIKE ${searchPattern}
+          )
+        `;
+      }
+
+      const countResult = await sql`
+        SELECT COUNT(*)::int AS total
+        FROM usuarios
+        ${conditions}
+      `;
+
+      const total = countResult[0].total;
+      const totalPages = Math.ceil(total / limit);
+
+      /*
+      * `status` passou a ser incluído no SELECT — antes estava
+      * ausente e era a razão do filtro `select(.status ...)` do
+      * jq nunca casar.
+      */
+      const usuarios = await sql`
+        SELECT
+          id,
+          nome_completo,
+          email,
+          tipo_perfil,
+          documento,
+          telefone,
+          status,
+          criado_em
+        FROM usuarios
+        ${conditions}
+        ORDER BY criado_em DESC
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `;
+
+      const usuariosMascarados = usuarios.map((usuario) => ({
+        ...usuario,
+        documento: mascararDocumento(usuario.documento),
+      }));
+
+      /*
+      * Compatibilidade temporária: alguns testes e scripts antigos
+      * leem `total`, `page` e `totalPages` na raiz.
+      *
+      * Também expomos `pagination` para o cliente novo (Flutter),
+      * que consome uma estrutura mais explícita.
+      *
+      * Quando todo o consumo migrar para `pagination`, remover
+      * os três campos da raiz.
+      */
+      return res.status(200).json({
+        success: true,
+        data: usuariosMascarados,
+
+        // Contrato legado
+        total,
+        page,
+        totalPages,
+
+        // Contrato novo
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages,
+        },
+      });
+      /* ----- Trecho pausado. Acima temos uma explicacao sobre
+      return res.status(200).json({
+        success: true,
+        data: usuariosMascarados,
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages,
+        },
+      });*/
+
+    } catch (error) {
+      console.error("Erro ao listar usuários:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno ao listar usuários.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
+    }
+  },
+
+  /**
+   * GET /api/usuarios/:id
+   *
+   * Retorna ao administrador:
+   * - dados básicos do usuário;
+   * - endereços;
+   * - histórico de pedidos como consumidor ou caçambeiro;
+   * - detalhes do fornecedor, quando aplicável.
+   */
+  async detalheUsuario(req, res) {
+    try {
+      const { id } = req.params;
+
+      const usuarios = await sql`
+        SELECT
+          id,
+          nome_completo,
+          email,
+          tipo_perfil,
+          documento,
+          telefone,
+          status,
+          criado_em
+        FROM usuarios
+        WHERE id = ${id}
+      `;
+
+      if (usuarios.length === 0) {
+        return sendError(
+          res,
+          404,
+          "Usuário não encontrado.",
+          "USER_NOT_FOUND",
+        );
+      }
+
+      const usuario = serializarUsuario(usuarios[0]);
+
+      const enderecos = await sql`
+        SELECT
+          id,
+          usuario_id,
+          cep,
+          logradouro,
+          numero,
+          bairro,
+          cidade_estado,
+          criado_em
+        FROM enderecos
+        WHERE usuario_id = ${id}
+        ORDER BY criado_em DESC
+      `;
+
+      const pedidos = await sql`
+        SELECT
+          id,
+          consumidor_id,
+          cacambeiro_id,
+          endereco_id,
+          data_pedido,
+          data_inicio,
+          dias_aluguel,
+          preco_final,
+          status_pagamento,
+          status_aluguel
+        FROM alugueis
+        WHERE consumidor_id = ${id}
+           OR cacambeiro_id = ${id}
+        ORDER BY data_pedido DESC
+      `;
+
+      usuario.enderecos = enderecos;
+      usuario.pedidos = pedidos;
+
+      if (usuario.tipo_perfil === "CACAMBEIRO") {
+        const detalhes = await sql`
+          SELECT
+            horario_inicio,
+            horario_fim,
+            raio_entrega_km,
+            taxa_entrega
+          FROM detalhes_cacambeiro
+          WHERE usuario_id = ${id}
+        `;
+
+        usuario.detalhes_cacambeiro =
+          detalhes.length > 0 ? detalhes[0] : null;
+      }
+
+      return sendSuccess(
+        res,
+        usuario,
+        200,
+        "Detalhes do usuário carregados com sucesso.",
+      );
+    } catch (error) {
+      console.error(
+        "Erro ao buscar detalhes do usuário:",
+        error,
+      );
+
+      return sendError(
+        res,
+        500,
+        "Erro interno ao buscar detalhes do usuário.",
+        "INTERNAL_SERVER_ERROR",
+      );
+    }
+  },
+
+  /**
+ * PATCH /api/usuarios/senha
+ *
+ * Altera a senha do usuário autenticado.
+ *
+ * Segurança:
+ * - o usuário é identificado exclusivamente pelo JWT;
+ * - não recebe ID na URL ou no body;
+ * - exige a senha atual;
+ * - invalida todos os access tokens através do token_version;
+ * - revoga todos os refresh tokens;
+ * - invalida códigos de recuperação pendentes.
+ */
+  async alterarSenha(req, res) {
+    try {
+      const usuarioId = req.usuario_id;
+
+      const {
+        senha_atual,
+        nova_senha,
+        confirmar_senha,
+      } = req.body;
+
+      /*
+      * Esta validação também existe no middleware, mas permanece
+      * como proteção adicional da regra de negócio.
+      */
+      if (nova_senha !== confirmar_senha) {
+        return res.status(400).json({
+          success: false,
+          message: "As senhas informadas não são iguais.",
+          code: "PASSWORD_CONFIRMATION_MISMATCH",
+          fields: {
+            confirmar_senha:
+              "A confirmação não corresponde à nova senha.",
+          },
+        });
+      }
+
+      /*
+      * Busca somente o usuário identificado pelo token.
+      * Portanto, ninguém pode alterar a senha de outra conta.
+      */
+      const usuarios = await sql`
+        SELECT
+          id,
+          senha_hash,
+          status
+        FROM usuarios
+        WHERE id = ${usuarioId}
+        LIMIT 1
+      `;
+
+      if (usuarios.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Usuário não encontrado.",
+          code: "USER_NOT_FOUND",
+        });
+      }
+
+      const usuario = usuarios[0];
+
+      /*
+      * Confere a senha atual antes de permitir a alteração.
+      */
+      const senhaAtualValida = await bcrypt.compare(
+        senha_atual,
+        usuario.senha_hash,
+      );
+
+      if (!senhaAtualValida) {
+        return res.status(401).json({
+          success: false,
+          message: "A senha atual está incorreta.",
+          code: "INVALID_CURRENT_PASSWORD",
+          fields: {
+            senha_atual: "A senha atual está incorreta.",
+          },
+        });
+      }
+
+      /*
+      * Impede reutilizar a senha atual.
+      */
+      const mesmaSenha = await bcrypt.compare(
+        nova_senha,
+        usuario.senha_hash,
+      );
+
+      if (mesmaSenha) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "A nova senha deve ser diferente da senha atual.",
+          code: "PASSWORD_REUSE_NOT_ALLOWED",
+          fields: {
+            nova_senha:
+              "Informe uma senha diferente da atual.",
+          },
+        });
+      }
+
+      const novoHash = await bcrypt.hash(nova_senha, 10);
+
+      /*
+      * Uma única instrução SQL realiza:
+      *
+      * 1. alteração da senha;
+      * 2. incremento do token_version;
+      * 3. revogação dos refresh tokens;
+      * 4. invalidação dos códigos de recuperação.
+      *
+      * Se alguma etapa falhar, toda a operação é revertida.
+      */
+      const resultado = await sql`
+        WITH usuario_atualizado AS (
+          UPDATE usuarios
+          SET
+            senha_hash = ${novoHash},
+            token_version = token_version + 1
+          WHERE id = ${usuarioId}
+          RETURNING id
+        ),
+
+        refresh_tokens_revogados AS (
+          UPDATE refresh_tokens rt
+          SET revoked_at = NOW()
+          FROM usuario_atualizado ua
+          WHERE rt.usuario_id = ua.id
+            AND rt.revoked_at IS NULL
+          RETURNING rt.id
+        ),
+
+        recuperacoes_invalidadas AS (
+          UPDATE password_recovery_tokens pr
+          SET used_at = NOW()
+          FROM usuario_atualizado ua
+          WHERE pr.usuario_id = ua.id
+            AND pr.used_at IS NULL
+          RETURNING pr.id
+        )
+
+        SELECT id
+        FROM usuario_atualizado
+      `;
+
+      if (resultado.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Usuário não encontrado.",
+          code: "USER_NOT_FOUND",
+        });
+      }
+
+      /*
+      * O access token usado nesta requisição deixa de funcionar,
+      * pois seu token_version ficou desatualizado.
+      */
+      return res.status(200).json({
+        success: true,
+        message:
+          "Senha alterada com sucesso. Entre novamente para continuar.",
+        data: {
+          requires_login: true,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao alterar senha:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno ao alterar a senha.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
+    }
+  },
+
+  /**
+   * PATCH /api/usuarios/:id/status
+   *
+   * Aprovação e suspensão de usuários pelo ADMIN.
+   *
+   * Regras de negócio:
+   * - apenas ADMIN pode chamar (garantido na rota);
+   * - o ADMIN não pode alterar o próprio status;
+   * - o ADMIN não pode alterar o status de outro ADMIN;
+   * - o usuário alvo precisa existir;
+   * - se o alvo já estiver no status desejado → 409;
+   * - ao SUSPENDER:
+   *     - incrementa token_version → access tokens atuais ficam inválidos;
+   *     - revoga todos os refresh tokens;
+   *     - invalida códigos de recuperação pendentes;
+   * - ao APROVAR/REATIVAR:
+   *     - não mexe em sessões (o usuário estava bloqueado e não tinha sessão ativa).
+   */
+  async alterarStatus(req, res) {
+    try {
+      const adminId = req.usuario_id;
+      const { id } = req.params;
+      const { status } = req.body;
+
+      /*
+      * Bloqueio de autossuspensão: mesmo um ADMIN não deve conseguir
+      * se trancar fora do sistema por acidente.
+      */
+      if (adminId === id) {
+        return res.status(403).json({
+          success: false,
+          message: "Você não pode alterar o status da sua própria conta.",
+          code: "SELF_STATUS_CHANGE_NOT_ALLOWED",
+        });
+      }
+
+      /*
+      * Busca o alvo antes do UPDATE para distinguir com precisão:
+      * - usuário inexistente;
+      * - alvo é outro ADMIN;
+      * - alvo já está no status desejado.
+      *
+      * Isso evita que a operação rode e depois tenhamos que
+      * adivinhar qual foi o motivo da falha.
+      */
+      const alvos = await sql`
+        SELECT
+          id,
+          nome_completo,
+          email,
+          tipo_perfil,
+          status
+        FROM usuarios
+        WHERE id = ${id}
+        LIMIT 1
+      `;
+
+      if (alvos.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Usuário não encontrado.",
+          code: "USER_NOT_FOUND",
+        });
+      }
+
+      const alvo = alvos[0];
+
+      /*
+      * Administradores gerenciam contas, não uns aos outros.
+      * Se um dia houver `SUPER_ADMIN`, essa regra deve ser
+      * revista apenas para esse nível.
+      */
+      if (alvo.tipo_perfil === "ADMIN") {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Administradores não podem alterar o status de outros administradores.",
+          code: "ADMIN_STATUS_CHANGE_NOT_ALLOWED",
+        });
+      }
+
+      /*
+      * Evita operação vazia. Devolve 409 Conflict porque o pedido
+      * está bem formado, mas o estado atual já é o esperado.
+      */
+      if (alvo.status === status) {
+        return res.status(409).json({
+          success: false,
+          message: `O usuário já está com o status ${status}.`,
+          code: "USER_STATUS_UNCHANGED",
+        });
+      }
+
+      /*
+      * Uma única instrução SQL aplica todas as mudanças:
+      * - status;
+      * - token_version (apenas ao suspender);
+      * - revogação dos refresh tokens (apenas ao suspender);
+      * - invalidação de códigos de recuperação (apenas ao suspender).
+      *
+      * O CASE WHEN ${status}::text = 'SUSPENSO' desliga as ações
+      * de sessão quando o alvo é ATIVO, mantendo a transação
+      * correta em ambos os fluxos.
+      */
+      const resultado = await sql`
+        WITH atualizado AS (
+          UPDATE usuarios
+          SET
+            status = ${status},
+            token_version =
+              token_version
+              + CASE WHEN ${status}::text = 'SUSPENSO'
+                    THEN 1 ELSE 0 END
+          WHERE id = ${id}
+          RETURNING
+            id,
+            nome_completo,
+            email,
+            tipo_perfil,
+            status,
+            token_version
+        ),
+
+        refresh_tokens_revogados AS (
+          UPDATE refresh_tokens rt
+          SET revoked_at = NOW()
+          FROM atualizado a
+          WHERE rt.usuario_id = a.id
+            AND rt.revoked_at IS NULL
+            AND ${status}::text = 'SUSPENSO'
+          RETURNING rt.id
+        ),
+
+        recuperacoes_invalidadas AS (
+          UPDATE password_recovery_tokens pr
+          SET used_at = NOW()
+          FROM atualizado a
+          WHERE pr.usuario_id = a.id
+            AND pr.used_at IS NULL
+            AND ${status}::text = 'SUSPENSO'
+          RETURNING pr.id
+        )
+
+        SELECT * FROM atualizado
+      `;
+
+      if (resultado.length === 0) {
+        /*
+        * Defensivo: o pré-check acima já garante que existe,
+        * mas se houver corrida com deleção, retornamos 404.
+        */
+        return res.status(404).json({
+          success: false,
+          message: "Usuário não encontrado.",
+          code: "USER_NOT_FOUND",
+        });
+      }
+
+      /*
+      * TODO (opcional): disparar e-mail/SMS avisando sobre a
+      * aprovação ou suspensão. Ex.: notificationService.sendAccountStatusEmail().
+      * Manter como fire-and-forget para não bloquear a resposta.
+      */
+
+      return res.status(200).json({
+        success: true,
+        message:
+          status === "ATIVO"
+            ? "Usuário aprovado/reativado com sucesso."
+            : "Usuário suspenso com sucesso.",
+        data: resultado[0],
+      });
+    } catch (error) {
+      console.error("Erro ao alterar status do usuário:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Erro interno ao alterar o status do usuário.",
+        code: "INTERNAL_SERVER_ERROR",
+      });
+    }
+  },
+};
+
+module.exports = usuariosController;
+
+
+// ------------- Old version --------------
+/*const sql = require("../config/db");
 const bcrypt = require("bcryptjs");
 
 function mascararDocumento(doc) {
@@ -229,7 +1248,7 @@ async criarAdmin(req, res) {
  * - page: página atual
  * - tipo_perfil: CONSUMIDOR, CACAMBEIRO ou ADMIN
  * - search: busca por nome ou e-mail
- */
+ *
 async listarUsuarios(req, res) {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -402,3 +1421,4 @@ async listarUsuarios(req, res) {
 };
 
 module.exports = usuariosController;
+*/

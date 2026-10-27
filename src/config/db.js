@@ -1,5 +1,6 @@
 const { neon } = require("@neondatabase/serverless");
-require("dotenv").config();
+require("dotenv").config({ quiet: true });
+//require("dotenv").config();
 
 let sql;
 if (process.env.DATABASE_URL) {

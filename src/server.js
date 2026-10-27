@@ -23,6 +23,7 @@ const carrinhoRoutes = require("./routes/carrinhoRoutes");
 const alugueisRoutes = require("./routes/alugueisRoutes");
 const avaliacoesRoutes = require("./routes/avaliacoesRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const materiaisRoutes = require("./routes/materiaisRoutes");
 const parceirosRoutes = require("./routes/parceirosRoutes");
 const coletasRoutes = require("./routes/coletasRoutes");
 
@@ -225,6 +226,7 @@ app.use("/api/carrinho", carrinhoRoutes);
 app.use("/api/alugueis", alugueisRoutes);
 app.use("/api/avaliacoes", avaliacoesRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/materiais", materiaisRoutes);
 app.use("/api/parceiros", parceirosRoutes);
 app.use("/api/coletas", coletasRoutes);
 
