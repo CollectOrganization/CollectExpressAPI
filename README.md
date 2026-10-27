@@ -86,9 +86,12 @@ JWT_EXPIRES_IN=1h
 PORT=3001
 FRONTEND_URL=http://localhost:3000
 NODE_ENV=development
+ABACATEPAY_API_KEY=chave-da-abacatepay
 ```
 
 O arquivo `.env` não deve ser enviado ao GitHub.
+
+`ABACATEPAY_API_KEY` é a chave da AbacatePay usada no pagamento por PIX (veja [Pagamento por PIX](#pagamento-por-pix)). Sem ela, a API funciona normalmente, mas as rotas de PIX respondem `503`.
 
 Crie também um `.env.example`:
 
@@ -99,6 +102,7 @@ JWT_EXPIRES_IN=1h
 PORT=3001
 FRONTEND_URL=http://localhost:3000
 NODE_ENV=development
+ABACATEPAY_API_KEY=
 ```
 
 Confirme o `.gitignore`:
@@ -207,6 +211,7 @@ Resposta esperada:
 | `npm start` | Inicia a API |
 | `npm run dev` | Inicia a API com Nodemon |
 | `npm run migrate` | Executa migrations auxiliares |
+| `npm run migrate:pix` | Cria a tabela `pagamentos_pix` |
 | `npm run seed` | Recria os dados acadêmicos |
 | `npm run db:check` | Verifica registros do banco |
 | `npm test` | Executa os testes |
@@ -393,6 +398,9 @@ GET /api/cacambas?search=standard
 | `GET` | `/api/alugueis/gestao` | `CACAMBEIRO` |
 | `PATCH` | `/api/alugueis/:id/status` | `CACAMBEIRO` |
 | `GET` | `/api/alugueis` | `ADMIN` |
+| `POST` | `/api/alugueis/:id/pix` | `CONSUMIDOR` (dono do pedido) |
+| `GET` | `/api/alugueis/:id/pix` | `CONSUMIDOR` (dono do pedido) |
+| `POST` | `/api/alugueis/:id/pix/simular` | `CONSUMIDOR` (dono do pedido), só no modo de teste |
 
 ### Avaliações
 
@@ -432,6 +440,41 @@ Não é permitido pular etapas nem alterar um pedido já finalizado.
 ```text
 PENDENTE
 PAGO
+```
+
+## Pagamento por PIX
+
+O pagamento usa o Checkout Transparente da [AbacatePay](https://docs.abacatepay.com/pages/transparents/reference).
+
+1. Crie a tabela com `npm run migrate:pix`.
+2. Crie uma conta na AbacatePay. Ela começa no modo de teste, em que nada é cobrado de verdade.
+3. No painel, em **Integração**, crie uma chave com as permissões `TRANSPARENT:CREATE` e `TRANSPARENT:READ`.
+4. Coloque a chave em `ABACATEPAY_API_KEY` no `.env` (e nas variáveis do Render).
+
+Fluxo:
+
+- `POST /api/alugueis/:id/pix` gera a cobrança e devolve o código copia e cola (`copia_cola`) e o QR Code (`qr_code_base64`). Se já existe um PIX pendente válido para o pedido, devolve o mesmo. Cada PIX vale por 1 hora.
+- `GET /api/alugueis/:id/pix` consulta a cobrança na AbacatePay. Quando ela foi paga, o pedido passa para `PAGO`. O app chama esta rota a cada poucos segundos enquanto espera.
+- `POST /api/alugueis/:id/pix/simular` simula o pagamento. Só funciona quando a cobrança foi criada com a chave do modo de teste (`dev_mode: true`); com a chave de produção responde `403`.
+
+Exemplo de resposta:
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "uuid",
+    "aluguel_id": "uuid",
+    "status": "PENDING",
+    "status_pagamento": "PENDENTE",
+    "valor": 450,
+    "copia_cola": "00020101021226...",
+    "qr_code_base64": "data:image/png;base64,iVBOR...",
+    "dev_mode": true,
+    "expira_em": "2026-10-27T18:00:00.000Z",
+    "pago_em": null
+  }
+}
 ```
 
 ## Paginação
