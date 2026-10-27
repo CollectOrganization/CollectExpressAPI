@@ -42,7 +42,7 @@ router.post(
  * Atualiza um endereço pertencente ao usuário autenticado.
  */
 router.put(
-  "enderecos/:id",
+  "/:id",
   validationMiddleware(schemas.uuidParam, "params"),
   validationMiddleware(schemas.updateAddress),
   enderecosController.atualizar,
