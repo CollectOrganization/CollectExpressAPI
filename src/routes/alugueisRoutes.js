@@ -37,6 +37,7 @@ module.exports = router;
 const express = require("express");
 
 const alugueisController = require("../controllers/alugueisController");
+const pagamentosController = require("../controllers/pagamentosController");
 const authMiddleware = require("../middlewares/authMiddleware");
 const roleMiddleware = require("../middlewares/roleMiddleware");
 const validationMiddleware = require(
@@ -98,6 +99,29 @@ router.patch(
   validationMiddleware(schemas.uuidParam, "params"),
   validationMiddleware(schemas.updateOrderStatus),
   alugueisController.atualizarStatus,
+);
+
+// CONSUMIDOR: pagamento do pedido por PIX (AbacatePay).
+router.post(
+  "/:id/pix",
+  roleMiddleware(["CONSUMIDOR"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  pagamentosController.gerarPix,
+);
+
+router.get(
+  "/:id/pix",
+  roleMiddleware(["CONSUMIDOR"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  pagamentosController.consultarPix,
+);
+
+// Só com a chave do modo de teste da AbacatePay.
+router.post(
+  "/:id/pix/simular",
+  roleMiddleware(["CONSUMIDOR"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  pagamentosController.simularPix,
 );
 
 module.exports = router;

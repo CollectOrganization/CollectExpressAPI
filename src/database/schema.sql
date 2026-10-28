@@ -256,6 +256,26 @@ CREATE TABLE IF NOT EXISTS materiais_reciclaveis (
 CREATE INDEX IF NOT EXISTS idx_materiais_reciclaveis_nome
 ON materiais_reciclaveis(nome);
 
+-- Pagamentos PIX (cobranças criadas na AbacatePay)
+CREATE TABLE IF NOT EXISTS pagamentos_pix (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  aluguel_id UUID NOT NULL,
+  cobranca_id VARCHAR(100) NOT NULL,
+  valor_centavos INTEGER NOT NULL CHECK (valor_centavos >= 100),
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+  copia_cola TEXT NOT NULL,
+  qr_code_base64 TEXT,
+  dev_mode BOOLEAN NOT NULL DEFAULT FALSE,
+  expira_em TIMESTAMPTZ,
+  pago_em TIMESTAMPTZ,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT fk_pagamentos_pix_aluguel
+    FOREIGN KEY (aluguel_id) REFERENCES alugueis(id) ON DELETE CASCADE,
+  CONSTRAINT pagamentos_pix_cobranca_unique UNIQUE (cobranca_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pagamentos_pix_aluguel
+ON pagamentos_pix(aluguel_id, criado_em DESC);
+
 
 -- ============================================
 -- INDEXES
