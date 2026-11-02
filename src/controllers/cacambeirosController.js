@@ -5,6 +5,8 @@ const {
   sendError,
 } = require("../utils/apiResponse");
 
+const { resolverFotoUrl } = require("../services/storageService");
+
 const PLATFORM_FEE_RATE = 0.05;
 const MAX_FINANCIAL_PERIOD_DAYS = 366;
 
@@ -652,6 +654,7 @@ const cacambeirosController = {
       const catalog = dumpsters.map(
         (dumpster) => ({
           ...dumpster,
+          foto_url: resolverFotoUrl(dumpster.foto_url),
           tamanho_m3: Number(
             dumpster.tamanho_m3,
           ),

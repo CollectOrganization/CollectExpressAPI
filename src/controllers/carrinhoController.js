@@ -5,6 +5,8 @@ const {
   sendError,
 } = require("../utils/apiResponse");
 
+const { resolverFotoUrl } = require("../services/storageService");
+
 /**
  * Converte valores numéricos retornados pelo PostgreSQL.
  *
@@ -100,7 +102,7 @@ async function findConsumerCart(consumerId) {
         tipo_residuo: item.tipo_residuo,
         tamanho_m3: toNumber(item.tamanho_m3),
         preco_diaria: dailyPrice,
-        foto_url: item.foto_url,
+        foto_url: resolverFotoUrl(item.foto_url),
         disponivel: item.disponivel,
       },
     };

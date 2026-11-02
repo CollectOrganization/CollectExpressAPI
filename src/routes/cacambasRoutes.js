@@ -4,6 +4,7 @@ const cacambasController = require("../controllers/cacambasController");
 const authMiddleware = require("../middlewares/authMiddleware");
 const roleMiddleware = require("../middlewares/roleMiddleware");
 const validationMiddleware = require("../middlewares/validationMiddleware");
+const { uploadJson } = require("../middlewares/uploadBody");
 const schemas = require("../validators/requestSchemas");
 
 const router = express.Router();
@@ -26,11 +27,12 @@ router.get(
   cacambasController.listar,
 );
 
-// Cadastra uma caçamba.
+// Cadastra uma caçamba. Aceita foto em base64 (corpo de até 3 MB).
 router.post(
   "/",
   authMiddleware,
   roleMiddleware(["CACAMBEIRO"]),
+  uploadJson,
   validationMiddleware(schemas.createDumpster),
   cacambasController.criar,
 );
@@ -46,11 +48,12 @@ router.get(
   cacambasController.detalhe,
 );
 
-// Atualiza a caçamba do fornecedor.
+// Atualiza a caçamba do fornecedor. Aceita foto em base64.
 router.put(
   "/:id",
   authMiddleware,
   roleMiddleware(["CACAMBEIRO"]),
+  uploadJson,
   validationMiddleware(schemas.uuidParam, "params"),
   validationMiddleware(
     schemas.updateDumpster,
@@ -59,6 +62,9 @@ router.put(
       atLeastOne: [
         "nome",
         "foto_url",
+        "foto_base64",
+        "remover_foto",
+        "permite_extensao",
         "tipo_residuo",
         "tamanho_m3",
         "preco_diaria",

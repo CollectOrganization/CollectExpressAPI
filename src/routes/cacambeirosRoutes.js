@@ -7,10 +7,34 @@ const validationMiddleware = require("../middlewares/validationMiddleware",);
 const schemas = require("../validators/requestSchemas");
 
 const avaliacoesController = require("../controllers/avaliacoesController");
+const assinaturasController = require("../controllers/assinaturasController");
+const { uploadJson } = require("../middlewares/uploadBody");
 
 // Rotas autenticadas do caçambeiro (antes de /:id para evitar conflito)
 router.get("/dashboard", authMiddleware, roleMiddleware(['CACAMBEIRO']), cacambeirosController.dashboard);
 router.get("/financeiro", authMiddleware, roleMiddleware(['CACAMBEIRO']), cacambeirosController.financeiro);
+
+// Assinatura padrão da empresa, usada nos contratos de locação.
+router.get(
+  "/me/assinatura",
+  authMiddleware,
+  roleMiddleware(["CACAMBEIRO"]),
+  assinaturasController.obter,
+);
+router.put(
+  "/me/assinatura",
+  authMiddleware,
+  roleMiddleware(["CACAMBEIRO"]),
+  uploadJson,
+  validationMiddleware(schemas.uploadAssinatura),
+  assinaturasController.salvar,
+);
+router.delete(
+  "/me/assinatura",
+  authMiddleware,
+  roleMiddleware(["CACAMBEIRO"]),
+  assinaturasController.remover,
+);
 
 // Rotas públicas para consumidores verem os fornecedores
 router.get("/", cacambeirosController.listar);

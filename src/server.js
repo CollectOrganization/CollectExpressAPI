@@ -26,9 +26,16 @@ const adminRoutes = require("./routes/adminRoutes");
 const materiaisRoutes = require("./routes/materiaisRoutes");
 const parceirosRoutes = require("./routes/parceirosRoutes");
 const coletasRoutes = require("./routes/coletasRoutes");
+const extensoesRoutes = require("./routes/extensoesRoutes");
+const extensoesController = require("./controllers/extensoesController");
 
 // Cria a limpeza dos tokens
 const {startTokenCleanup,} = require("./services/tokenCleanupService");
+const { pastaPublica } = require("./services/storageService");
+const {
+  iniciarVarreduraDeExtensoes,
+} = require("./services/extensaoService");
+const { criarParserGlobal } = require("./middlewares/uploadBody");
 
 // Inicializa o Express
 const app = express();
@@ -73,6 +80,8 @@ app.use(
  */
 const allowedOrigins = [
   process.env.FRONTEND_URL,
+  // A página de resposta de extensão envia um formulário da própria API.
+  process.env.PUBLIC_API_URL,
   "https://collectexpress.onrender.com",
   "http://localhost:8081",
   "http://localhost:3000",
@@ -169,9 +178,23 @@ app.use(globalLimiter);
  * Isso reduz o risco de consumo excessivo de memória por payloads
  * muito grandes.
  */
+app.use(criarParserGlobal("100kb"));
+
+/**
+ * Fotos de caçamba e outros arquivos públicos.
+ *
+ * Os nomes dos arquivos são UUIDs gerados pelo servidor e nunca mudam
+ * de conteúdo, então o cache longo é seguro. Assinaturas e contratos
+ * ficam em outra pasta e só saem por rotas autenticadas.
+ */
 app.use(
-  express.json({
-    limit: "100kb",
+  "/uploads",
+  express.static(pastaPublica(), {
+    index: false,
+    dotfiles: "deny",
+    maxAge: "7d",
+    immutable: true,
+    fallthrough: true,
   }),
 );
 
@@ -229,6 +252,13 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/materiais", materiaisRoutes);
 app.use("/api/parceiros", parceirosRoutes);
 app.use("/api/coletas", coletasRoutes);
+app.use("/api/extensoes", extensoesRoutes);
+
+// Chamada por um cron externo (header x-jobs-secret = JOBS_SECRET).
+app.post(
+  "/api/internal/jobs/extensoes",
+  extensoesController.rodarVarredura,
+);
 
 /**
  * Estes middlewares devem permanecer depois de todas as rotas.
@@ -247,6 +277,9 @@ const PORT = Number(process.env.PORT) || 3000;
 
 // Inicializa o token cleanup
 startTokenCleanup();
+
+// Expira pedidos de extensão sem resposta e pagamentos fora do prazo.
+iniciarVarreduraDeExtensoes();
 
 app.listen(PORT, () => {
   console.log(`API disponível em http://localhost:${PORT}/api`);

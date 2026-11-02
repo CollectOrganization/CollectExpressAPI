@@ -261,6 +261,53 @@ function checkoutDate() {
   return date.toISOString().split("T")[0];
 }
 
+/**
+ * Assinatura de teste: PNG 300x100 transparente com um traço preto.
+ * O checkout exige aceite dos termos e uma assinatura em PNG.
+ */
+function testSignatureBase64() {
+  const zlib = require("zlib");
+  const width = 300;
+  const height = 100;
+  const rows = [];
+
+  for (let y = 0; y < height; y += 1) {
+    const row = Buffer.alloc(1 + width * 4);
+
+    for (let x = 0; x < width; x += 1) {
+      if (Math.abs(y - (50 + Math.sin(x / 20) * 25)) < 2) {
+        row.writeUInt32BE(0x000000ff, 1 + x * 4);
+      }
+    }
+
+    rows.push(row);
+  }
+
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(zlib.crc32(body) >>> 0);
+    return Buffer.concat([length, body, crc]);
+  };
+
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 6;
+
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", zlib.deflateSync(Buffer.concat(rows))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+
+  return `data:image/png;base64,${png.toString("base64")}`;
+}
+
 async function checkout(token, addressId) {
   return request("/alugueis/checkout", {
     method: "POST",
@@ -270,6 +317,8 @@ async function checkout(token, addressId) {
     body: JSON.stringify({
       endereco_id: addressId,
       data_inicio: checkoutDate(),
+      aceite_termos: true,
+      assinatura_base64: testSignatureBase64(),
     }),
   });
 }

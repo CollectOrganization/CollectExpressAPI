@@ -20,6 +20,8 @@
     "test:avaliacoes": "node src/scripts/testAvaliacoesController.js",
     "migrate:recycling:materials": "node src/scripts/recyclingMaterialsMigration.js",
     "migrate:pix": "node src/scripts/pixPaymentMigration.js",
+    "migrate:contratos": "node src/scripts/contratosMigration.js",
+    "migrate:extensoes": "node src/scripts/extensoesMigration.js",
     "test:seed": "node src/scripts/testSeed.js",
     "test": "jest",
     "test:watch": "jest --watch"
@@ -32,7 +34,8 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.3.0",
-    "jsonwebtoken": "^9.0.3"
+    "jsonwebtoken": "^9.0.3",
+    "pdfkit": "^0.20.2"
   },
   "devDependencies": {
     "fast-check": "^4.8.0",

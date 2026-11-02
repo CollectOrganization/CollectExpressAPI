@@ -5,6 +5,58 @@ const {
   sendError,
 } = require("../utils/apiResponse");
 
+const crypto = require("crypto");
+
+const ApiError = require("../utils/apiError");
+const {
+  decodificarAssinaturaConsumidor,
+} = require("../utils/imageUpload");
+const {
+  resolverFotoUrl,
+  salvarArquivo,
+  removerArquivo,
+} = require("../services/storageService");
+const {
+  VERSAO_TERMOS,
+  buscarContrato,
+  emitirContrato,
+} = require("../services/contratoService");
+const extensaoService = require("../services/extensaoService");
+const {
+  EVENTOS,
+  EVENTO_POR_STATUS,
+  notificar,
+} = require("../services/notificacaoService");
+
+/** Resumo do contrato para o detalhe do pedido (null se não houver). */
+async function resumoDoContrato(aluguelId) {
+  try {
+    const contrato = await buscarContrato(aluguelId);
+
+    return contrato
+      ? {
+          disponivel: true,
+          status: contrato.status,
+          versao_termos: contrato.versao_termos,
+          aceite_em: contrato.aceite_em,
+        }
+      : null;
+  } catch (error) {
+    console.error("Erro ao ler contrato do pedido:", error.message);
+    return null;
+  }
+}
+
+/** Resumo de extensão para o detalhe do pedido (null se indisponível). */
+async function resumoDaExtensao(aluguelId) {
+  try {
+    return await extensaoService.resumoDoPedido(aluguelId);
+  } catch (error) {
+    console.error("Erro ao ler extensão do pedido:", error.message);
+    return null;
+  }
+}
+
 const ITEMS_PER_PAGE = 20;
 
 const RENTAL_STATUSES = [
@@ -118,12 +170,25 @@ const alugueisController = {
    * Se qualquer etapa falhar, o PostgreSQL desfaz toda a operação.
    */
   async checkout(req, res) {
+    // Arquivo da assinatura gravado nesta requisição, para desfazer se falhar.
+    let assinaturaGravada = null;
+
     try {
       const consumidorId = req.usuario_id;
       const {
         endereco_id: enderecoId,
         data_inicio: dataInicioString,
+        assinatura_base64: assinaturaBase64,
       } = req.body;
+
+      /*
+       * Sem aceite dos termos e assinatura não há pedido. O aceite
+       * também é exigido pelo schema da rota; aqui a imagem é validada
+       * (formato PNG, tamanho e dimensões) antes de qualquer gravação.
+       */
+      const assinatura = decodificarAssinaturaConsumidor(
+        assinaturaBase64,
+      );
 
       /*
        * Os campos já são validados pelo validationMiddleware,
@@ -215,11 +280,32 @@ const alugueisController = {
       }
 
       /*
+       * A assinatura vai para o disco antes do checkout, porque o
+       * caminho dela é gravado na mesma instrução SQL do pedido.
+       * Se o checkout não criar o pedido, o arquivo é apagado.
+       */
+      const contratoId = crypto.randomUUID();
+
+      assinaturaGravada = await salvarArquivo(
+        "private/assinaturas",
+        assinatura.extensao,
+        assinatura.buffer,
+        `${contratoId}-consumidor`,
+      );
+
+      const aceiteIp = (req.ip || "").slice(0, 64) || null;
+      const aceiteUserAgent =
+        (req.get?.("user-agent") || "").slice(0, 300) || null;
+
+      /*
        * Checkout atômico.
        *
        * O carrinho é bloqueado com FOR UPDATE. Isso impede que
        * duas requisições concorrentes criem dois pedidos usando
        * o mesmo carrinho.
+       *
+       * O aceite dos termos e a assinatura entram na mesma instrução
+       * (novo_contrato): pedido e prova do aceite nascem juntos.
        */
       const pedidos = await sql`
         WITH carrinho_bloqueado AS (
@@ -331,6 +417,26 @@ const alugueisController = {
           RETURNING id
         ),
 
+        novo_contrato AS (
+          INSERT INTO contratos_locacao (
+            id,
+            aluguel_id,
+            versao_termos,
+            aceite_ip,
+            aceite_user_agent,
+            assinatura_consumidor_path
+          )
+          SELECT
+            ${contratoId}::uuid,
+            np.id,
+            ${VERSAO_TERMOS},
+            ${aceiteIp},
+            ${aceiteUserAgent},
+            ${assinaturaGravada}
+          FROM novo_pedido np
+          RETURNING id
+        ),
+
         carrinho_removido AS (
           DELETE FROM carrinho c
           USING carrinho_bloqueado cb
@@ -369,6 +475,10 @@ const alugueisController = {
           SELECT 1
           FROM carrinho_removido
         )
+        AND EXISTS (
+          SELECT 1
+          FROM novo_contrato
+        )
       `;
 
       /*
@@ -380,6 +490,8 @@ const alugueisController = {
        * - outro checkout processou o carrinho primeiro.
        */
       if (pedidos.length === 0) {
+        await removerArquivo(assinaturaGravada);
+
         return sendError(
           res,
           400,
@@ -388,13 +500,51 @@ const alugueisController = {
         );
       }
 
+      /*
+       * O pedido e o aceite já estão gravados. O PDF é gerado em
+       * seguida; se falhar, o contrato fica PENDENTE e é gerado
+       * quando alguém pedir o documento.
+       */
+      let contratoDisponivel = false;
+      let contratoPdf = null;
+
+      try {
+        contratoPdf = await emitirContrato(pedidos[0].id);
+        contratoDisponivel = contratoPdf !== null;
+      } catch (erroContrato) {
+        console.error(
+          "Pedido criado, mas o contrato não foi gerado:",
+          erroContrato,
+        );
+      }
+
+      // E-mails não bloqueiam nem derrubam a resposta.
+      notificar(EVENTOS.PEDIDO_CRIADO, pedidos[0].id, {
+        contratoPdf,
+      });
+
       return sendSuccess(
         res,
-        pedidos[0],
+        {
+          ...pedidos[0],
+          contrato_disponivel: contratoDisponivel,
+        },
         201,
         "Pedido criado com sucesso.",
       );
     } catch (error) {
+      await removerArquivo(assinaturaGravada);
+
+      if (error instanceof ApiError) {
+        return sendError(
+          res,
+          error.statusCode,
+          error.message,
+          error.code,
+          error.fields,
+        );
+      }
+
       console.error("Erro no checkout:", error);
 
       return sendError(
@@ -792,6 +942,21 @@ const alugueisController = {
       `;
 
       if (resultado.length > 0) {
+        // Avisa o consumidor da nova etapa, sem bloquear a resposta.
+        notificar(EVENTO_POR_STATUS[novoStatus], id);
+
+        // Fora de EM_USO não faz sentido esperar resposta a uma extensão.
+        if (novoStatus !== "EM_USO") {
+          extensaoService
+            .cancelarSolicitacoesAbertas(id)
+            .catch((erro) =>
+              console.error(
+                "Erro ao cancelar extensões abertas:",
+                erro.message,
+              ),
+            );
+        }
+
         return sendSuccess(
           res,
           resultado[0],
@@ -1034,7 +1199,7 @@ const alugueisController = {
             nome: item.cacamba_nome,
             tipo_residuo: item.tipo_residuo,
             tamanho_m3: Number(item.tamanho_m3),
-            foto_url: item.foto_url,
+            foto_url: resolverFotoUrl(item.foto_url),
           },
         };
       });
@@ -1100,6 +1265,10 @@ const alugueisController = {
               data_avaliacao: avaliacoes[0].data_avaliacao,
             }
           : null,
+
+        // Nulos em pedidos antigos ou se as tabelas novas não existirem.
+        contrato: await resumoDoContrato(pedido.id),
+        extensao: await resumoDaExtensao(pedido.id),
 
         /*
         * Estas etapas representam o progresso atual.

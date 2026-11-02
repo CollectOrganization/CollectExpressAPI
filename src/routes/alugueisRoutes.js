@@ -38,8 +38,11 @@ const express = require("express");
 
 const alugueisController = require("../controllers/alugueisController");
 const pagamentosController = require("../controllers/pagamentosController");
+const contratosController = require("../controllers/contratosController");
+const extensoesController = require("../controllers/extensoesController");
 const authMiddleware = require("../middlewares/authMiddleware");
 const roleMiddleware = require("../middlewares/roleMiddleware");
+const { uploadJson } = require("../middlewares/uploadBody");
 const validationMiddleware = require(
   "../middlewares/validationMiddleware",
 );
@@ -57,10 +60,12 @@ router.get(
   alugueisController.listarTodos,
 );
 
-// CONSUMIDOR: finaliza o carrinho.
+// CONSUMIDOR: finaliza o carrinho. Exige aceite dos termos e a
+// assinatura desenhada (PNG em base64, corpo de até 3 MB).
 router.post(
   "/checkout",
   roleMiddleware(["CONSUMIDOR"]),
+  uploadJson,
   validationMiddleware(schemas.checkout),
   alugueisController.checkout,
 );
@@ -122,6 +127,60 @@ router.post(
   roleMiddleware(["CONSUMIDOR"]),
   validationMiddleware(schemas.uuidParam, "params"),
   pagamentosController.simularPix,
+);
+
+// Contrato de locação em PDF (dono do pedido ou ADMIN).
+router.get(
+  "/:id/contrato",
+  roleMiddleware(["CONSUMIDOR", "CACAMBEIRO", "ADMIN"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  contratosController.baixar,
+);
+
+// Extensão do aluguel.
+router.get(
+  "/:id/extensoes",
+  roleMiddleware(["CONSUMIDOR", "CACAMBEIRO", "ADMIN"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  extensoesController.listar,
+);
+
+router.post(
+  "/:id/extensoes",
+  roleMiddleware(["CONSUMIDOR"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  validationMiddleware(schemas.requestExtension),
+  extensoesController.solicitar,
+);
+
+router.patch(
+  "/:id/extensoes/:extId",
+  roleMiddleware(["CACAMBEIRO"]),
+  validationMiddleware(schemas.extensionParams, "params"),
+  validationMiddleware(schemas.respondExtension),
+  extensoesController.responder,
+);
+
+// Pagamento da extensão aceita (PIX, 24 h).
+router.post(
+  "/:id/extensoes/:extId/pix",
+  roleMiddleware(["CONSUMIDOR"]),
+  validationMiddleware(schemas.extensionParams, "params"),
+  pagamentosController.gerarPixExtensao,
+);
+
+router.get(
+  "/:id/extensoes/:extId/pix",
+  roleMiddleware(["CONSUMIDOR"]),
+  validationMiddleware(schemas.extensionParams, "params"),
+  pagamentosController.consultarPixExtensao,
+);
+
+router.post(
+  "/:id/extensoes/:extId/pix/simular",
+  roleMiddleware(["CONSUMIDOR"]),
+  validationMiddleware(schemas.extensionParams, "params"),
+  pagamentosController.simularPixExtensao,
 );
 
 module.exports = router;

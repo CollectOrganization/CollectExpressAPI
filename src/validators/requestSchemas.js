@@ -235,6 +235,16 @@ const schemas = {
       format: "url",
       maxLength: 500,
     },
+    // Imagem em base64 (data URI ou puro). Validada em utils/imageUpload.
+    foto_base64: {
+      required: false,
+      type: "string",
+      maxLength: 2100000,
+    },
+    permite_extensao: {
+      required: false,
+      type: "boolean",
+    },
     tipo_residuo: {
       required: true,
       type: "string",
@@ -267,6 +277,19 @@ const schemas = {
       type: "string",
       format: "url",
       maxLength: 500,
+    },
+    foto_base64: {
+      required: false,
+      type: "string",
+      maxLength: 2100000,
+    },
+    remover_foto: {
+      required: false,
+      type: "boolean",
+    },
+    permite_extensao: {
+      required: false,
+      type: "boolean",
     },
     tipo_residuo: {
       required: false,
@@ -337,6 +360,56 @@ const schemas = {
       required: true,
       type: "string",
       format: "date",
+    },
+    // Aceite dos termos e assinatura desenhada (PNG em base64).
+    aceite_termos: {
+      required: true,
+      type: "boolean",
+      custom: (valor) =>
+        valor === true || "É necessário aceitar os termos.",
+    },
+    assinatura_base64: {
+      required: true,
+      type: "string",
+      maxLength: 420000,
+    },
+  },
+
+  extensionParams: {
+    id: {
+      required: true,
+      type: "string",
+      format: "uuid",
+    },
+    extId: {
+      required: true,
+      type: "string",
+      format: "uuid",
+    },
+  },
+
+  requestExtension: {
+    dias_adicionais: {
+      required: true,
+      type: "integer",
+      min: 1,
+      max: 30,
+    },
+  },
+
+  respondExtension: {
+    acao: {
+      required: true,
+      type: "string",
+      enum: ["ACEITAR", "RECUSAR"],
+    },
+  },
+
+  uploadAssinatura: {
+    assinatura_base64: {
+      required: true,
+      type: "string",
+      maxLength: 420000,
     },
   },
 

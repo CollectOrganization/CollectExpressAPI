@@ -1,17 +1,31 @@
 const sql = require("../config/db");
 
+const ApiError = require("../utils/apiError");
+const { decodificarFotoCacamba } = require("../utils/imageUpload");
+const {
+  salvarArquivo,
+  removerArquivo,
+  caminhoPublico,
+  chaveDoCaminhoPublico,
+  resolverFotoUrl,
+} = require("../services/storageService");
+
 const ITEMS_PER_PAGE = 20;
 const MAX_PAGE = 100000;
 
 /**
  * Converte valores decimais retornados pelo PostgreSQL para Number.
  * O driver pode retornar campos DECIMAL/NUMERIC como String.
+ *
+ * Também transforma o caminho de uma foto enviada pelo app
+ * (/uploads/...) na URL completa da API.
  */
 function serializeCacamba(cacamba) {
   if (!cacamba) return null;
 
   return {
     ...cacamba,
+    foto_url: resolverFotoUrl(cacamba.foto_url),
     tamanho_m3:
       cacamba.tamanho_m3 !== null
         ? Number(cacamba.tamanho_m3)
@@ -173,6 +187,7 @@ const cacambasController = {
           preco_diaria,
           foto_url,
           disponivel,
+          permite_extensao,
           criado_em
         FROM cacambas
         WHERE cacambeiro_id = ${cacambeiroId}
@@ -295,7 +310,10 @@ const cacambasController = {
 
       return res.status(200).json({
         success: true,
-        data: cacambas,
+        data: cacambas.map((cacamba) => ({
+          ...cacamba,
+          foto_url: resolverFotoUrl(cacamba.foto_url),
+        })),
 
         // Compatibilidade com clientes anteriores.
         total,
@@ -444,6 +462,7 @@ const cacambasController = {
           c.preco_diaria,
           c.foto_url,
           c.disponivel,
+          c.permite_extensao,
           c.criado_em,
 
           u.nome_completo
@@ -523,6 +542,7 @@ const cacambasController = {
           preco_diaria: cacamba.preco_diaria,
           foto_url: cacamba.foto_url,
           disponivel: cacamba.disponivel,
+          permite_extensao: cacamba.permite_extensao,
           criado_em: cacamba.criado_em,
         }),
 
@@ -587,6 +607,9 @@ const cacambasController = {
    * - validação de request feita pela rota.
    */
   async criar(req, res) {
+    // Chave do arquivo gravado nesta requisição, para desfazer se falhar.
+    let fotoGravada = null;
+
     try {
       const cacambeiroId = req.usuario_id;
 
@@ -596,6 +619,8 @@ const cacambasController = {
         tamanho_m3,
         preco_diaria,
         foto_url,
+        foto_base64,
+        permite_extensao,
       } = req.body;
 
       /*
@@ -619,6 +644,24 @@ const cacambasController = {
         );
       }
 
+      /*
+       * Foto enviada em base64 vale mais que foto_url: o arquivo é
+       * gravado na pasta da API e o banco guarda só o caminho.
+       */
+      let fotoParaSalvar = foto_url || null;
+
+      if (foto_base64) {
+        const imagem = decodificarFotoCacamba(foto_base64);
+
+        fotoGravada = await salvarArquivo(
+          "public/cacambas",
+          imagem.extensao,
+          imagem.buffer,
+        );
+
+        fotoParaSalvar = caminhoPublico(fotoGravada);
+      }
+
       const rows = await sql`
         INSERT INTO cacambas (
           id,
@@ -628,7 +671,8 @@ const cacambasController = {
           tamanho_m3,
           preco_diaria,
           foto_url,
-          disponivel
+          disponivel,
+          permite_extensao
         )
         VALUES (
           gen_random_uuid(),
@@ -637,8 +681,9 @@ const cacambasController = {
           ${tipo_residuo.trim()},
           ${tamanho_m3},
           ${preco_diaria},
-          ${foto_url || null},
-          TRUE
+          ${fotoParaSalvar},
+          TRUE,
+          ${permite_extensao === true}
         )
         RETURNING
           id,
@@ -649,6 +694,7 @@ const cacambasController = {
           preco_diaria,
           foto_url,
           disponivel,
+          permite_extensao,
           criado_em
       `;
 
@@ -658,6 +704,18 @@ const cacambasController = {
         data: serializeCacamba(rows[0]),
       });
     } catch (error) {
+      await removerArquivo(fotoGravada);
+
+      if (error instanceof ApiError) {
+        return sendError(
+          res,
+          error.statusCode,
+          error.message,
+          error.code,
+          error.fields,
+        );
+      }
+
       console.error("Erro ao criar caçamba:", error);
 
       return sendError(
@@ -678,6 +736,9 @@ const cacambasController = {
    * A rota deve garantir que pelo menos um campo editável foi enviado.
    */
   async atualizar(req, res) {
+    // Chave do arquivo gravado nesta requisição, para desfazer se falhar.
+    let fotoGravada = null;
+
     try {
       const { id } = req.params;
       const cacambeiroId = req.usuario_id;
@@ -686,13 +747,16 @@ const cacambasController = {
         preco_diaria,
         disponivel,
         foto_url,
+        foto_base64,
+        remover_foto,
+        permite_extensao,
         nome,
         tipo_residuo,
         tamanho_m3,
       } = req.body;
 
       const existingRows = await sql`
-        SELECT id, cacambeiro_id
+        SELECT id, cacambeiro_id, foto_url
         FROM cacambas
         WHERE id = ${id}
       `;
@@ -738,15 +802,39 @@ const cacambasController = {
       }
 
       /*
+       * Foto: base64 grava um arquivo novo; remover_foto limpa;
+       * foto_url (link externo) continua aceito. Sem nenhum deles,
+       * a foto atual é mantida.
+       */
+      let novaFoto;
+
+      if (foto_base64) {
+        const imagem = decodificarFotoCacamba(foto_base64);
+
+        fotoGravada = await salvarArquivo(
+          "public/cacambas",
+          imagem.extensao,
+          imagem.buffer,
+        );
+
+        novaFoto = caminhoPublico(fotoGravada);
+      } else if (remover_foto === true) {
+        novaFoto = null;
+      } else if (foto_url !== undefined) {
+        novaFoto = foto_url;
+      }
+
+      /*
        * Os booleanos abaixo indicam se o campo foi enviado.
        * Isso permite, por exemplo, limpar foto_url enviando null.
        */
       const hasPrice = preco_diaria !== undefined;
       const hasAvailable = disponivel !== undefined;
-      const hasPhoto = foto_url !== undefined;
+      const hasPhoto = novaFoto !== undefined;
       const hasName = nome !== undefined;
       const hasCategory = tipo_residuo !== undefined;
       const hasSize = tamanho_m3 !== undefined;
+      const hasExtension = permite_extensao !== undefined;
 
       const rows = await sql`
         UPDATE cacambas
@@ -765,7 +853,7 @@ const cacambasController = {
 
           foto_url = CASE
             WHEN ${hasPhoto}
-              THEN ${foto_url ?? null}
+              THEN ${novaFoto ?? null}
             ELSE foto_url
           END,
 
@@ -785,6 +873,12 @@ const cacambasController = {
             WHEN ${hasSize}
               THEN ${tamanho_m3 ?? null}
             ELSE tamanho_m3
+          END,
+
+          permite_extensao = CASE
+            WHEN ${hasExtension}
+              THEN ${permite_extensao ?? null}
+            ELSE permite_extensao
           END
 
         WHERE id = ${id}
@@ -799,15 +893,25 @@ const cacambasController = {
           preco_diaria,
           foto_url,
           disponivel,
+          permite_extensao,
           criado_em
       `;
 
       if (rows.length === 0) {
+        await removerArquivo(fotoGravada);
+
         return sendError(
           res,
           409,
           "A caçamba não pôde ser atualizada.",
           "DUMPSTER_UPDATE_FAILED",
+        );
+      }
+
+      // A foto antiga só é apagada depois que o banco já aponta para a nova.
+      if (hasPhoto) {
+        await removerArquivo(
+          chaveDoCaminhoPublico(existingRows[0].foto_url),
         );
       }
 
@@ -817,6 +921,18 @@ const cacambasController = {
         data: serializeCacamba(rows[0]),
       });
     } catch (error) {
+      await removerArquivo(fotoGravada);
+
+      if (error instanceof ApiError) {
+        return sendError(
+          res,
+          error.statusCode,
+          error.message,
+          error.code,
+          error.fields,
+        );
+      }
+
       console.error("Erro ao atualizar caçamba:", error);
 
       return sendError(
@@ -845,7 +961,7 @@ const cacambasController = {
       const cacambeiroId = req.usuario_id;
 
       const rows = await sql`
-        SELECT id, cacambeiro_id
+        SELECT id, cacambeiro_id, foto_url
         FROM cacambas
         WHERE id = ${id}
       `;
@@ -946,6 +1062,11 @@ const cacambasController = {
           "DUMPSTER_DELETE_FAILED",
         );
       }
+
+      // Exclusão física: a foto gravada na API deixa de ser necessária.
+      await removerArquivo(
+        chaveDoCaminhoPublico(rows[0].foto_url),
+      );
 
       return res.status(200).json({
         success: true,
