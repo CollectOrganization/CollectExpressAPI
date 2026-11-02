@@ -276,6 +276,90 @@ CREATE TABLE IF NOT EXISTS pagamentos_pix (
 CREATE INDEX IF NOT EXISTS idx_pagamentos_pix_aluguel
 ON pagamentos_pix(aluguel_id, criado_em DESC);
 
+-- Contratos de locação (aceite dos termos + assinatura + PDF)
+ALTER TABLE detalhes_cacambeiro
+  ADD COLUMN IF NOT EXISTS assinatura_path VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS assinatura_atualizada_em TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS contratos_locacao (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  aluguel_id UUID NOT NULL,
+  versao_termos VARCHAR(20) NOT NULL,
+  aceite_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  aceite_ip VARCHAR(64),
+  aceite_user_agent VARCHAR(300),
+  assinatura_consumidor_path VARCHAR(255) NOT NULL,
+  assinatura_cacambeiro_path VARCHAR(255),
+  pdf_path VARCHAR(255),
+  pdf_sha256 CHAR(64),
+  pdf_gerado_em TIMESTAMPTZ,
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDENTE',
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT fk_contratos_locacao_aluguel
+    FOREIGN KEY (aluguel_id) REFERENCES alugueis(id) ON DELETE CASCADE,
+  CONSTRAINT contratos_locacao_aluguel_unique UNIQUE (aluguel_id),
+  CONSTRAINT contratos_locacao_status_check
+    CHECK (status IN ('PENDENTE', 'GERADO'))
+);
+
+-- Extensão de aluguel
+ALTER TABLE cacambas
+  ADD COLUMN IF NOT EXISTS permite_extensao BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE alugueis
+  ADD COLUMN IF NOT EXISTS dias_extra INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS valor_extra NUMERIC(12, 2) NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS extensoes_aluguel (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  aluguel_id UUID NOT NULL,
+  dias_adicionais INTEGER NOT NULL,
+  valor NUMERIC(12, 2) NOT NULL,
+  status VARCHAR(25) NOT NULL DEFAULT 'SOLICITADA',
+  solicitada_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  solicitacao_expira_em TIMESTAMPTZ NOT NULL,
+  respondida_em TIMESTAMPTZ,
+  pagamento_expira_em TIMESTAMPTZ,
+  pago_em TIMESTAMPTZ,
+  token_hash VARCHAR(64),
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT fk_extensoes_aluguel_aluguel
+    FOREIGN KEY (aluguel_id) REFERENCES alugueis(id) ON DELETE CASCADE,
+  CONSTRAINT extensoes_aluguel_dias_check
+    CHECK (dias_adicionais >= 1 AND dias_adicionais <= 30),
+  CONSTRAINT extensoes_aluguel_valor_check CHECK (valor > 0),
+  CONSTRAINT extensoes_aluguel_status_check CHECK (
+    status IN (
+      'SOLICITADA',
+      'AGUARDANDO_PAGAMENTO',
+      'PAGA',
+      'RECUSADA',
+      'EXPIRADA',
+      'CANCELADA'
+    )
+  ),
+  CONSTRAINT extensoes_aluguel_token_unique UNIQUE (token_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_extensoes_aluguel_aluguel
+ON extensoes_aluguel(aluguel_id, criado_em DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_extensoes_aluguel_em_aberto
+ON extensoes_aluguel(aluguel_id)
+WHERE status IN ('SOLICITADA', 'AGUARDANDO_PAGAMENTO');
+
+ALTER TABLE pagamentos_pix
+  ADD COLUMN IF NOT EXISTS extensao_id UUID;
+DO $$ BEGIN
+  ALTER TABLE pagamentos_pix
+  ADD CONSTRAINT fk_pagamentos_pix_extensao
+  FOREIGN KEY (extensao_id) REFERENCES extensoes_aluguel(id)
+  ON DELETE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_pagamentos_pix_extensao
+ON pagamentos_pix(extensao_id)
+WHERE extensao_id IS NOT NULL;
+
 
 -- ============================================
 -- INDEXES
