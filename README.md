@@ -756,3 +756,68 @@ Depois salve e faça o commit:
 git add README.md .env.example
 git commit -m "Atualiza documentação completa da API"
 ```
+
+## Contratos, e-mails, fotos e extensão de aluguel
+
+### Antes de subir esta versão
+
+Rode as migrações (são aditivas e podem ser repetidas) **antes** de publicar o código:
+
+```bash
+npm run migrate:contratos   # assinatura da empresa + tabela contratos_locacao
+npm run migrate:extensoes   # permite_extensao, dias_extra/valor_extra, extensoes_aluguel, pagamentos_pix.extensao_id
+```
+
+O checkout agora **exige** `aceite_termos: true` e `assinatura_base64` (PNG). O app Flutter e a API
+devem ser publicados juntos; versões antigas do app deixam de conseguir criar pedidos.
+
+### Variáveis novas
+
+Veja `.env.example`. As principais: `PUBLIC_API_URL`, `UPLOADS_DIR`, `BREVO_API_KEY`, `EMAIL_FROM`, `JOBS_SECRET`.
+
+### Arquivos enviados
+
+Ficam em `storage/` (ou `UPLOADS_DIR`):
+
+| Pasta | Conteúdo | Acesso |
+|---|---|---|
+| `storage/public/cacambas` | fotos das caçambas | público, em `/uploads/cacambas/...` |
+| `storage/private/assinaturas` | assinaturas da empresa e do consumidor | só por rotas autenticadas |
+| `storage/private/contratos` | PDFs dos contratos | só por rotas autenticadas (não versionado) |
+
+O disco do Render gratuito é apagado a cada deploy. O que for enviado em produção só permanece
+se for baixado e commitado. Os PDFs são regerados do banco quando o arquivo some.
+
+### Rotas novas
+
+| Rota | Perfil | Descrição |
+|---|---|---|
+| `POST/PUT /api/cacambas` | CACAMBEIRO | aceita `foto_base64`, `remover_foto`, `permite_extensao` |
+| `GET/PUT/DELETE /api/cacambeiros/me/assinatura` | CACAMBEIRO | assinatura padrão da empresa (PNG 3:1, 300x100 a 1200x400 px, até 300 KB) |
+| `POST /api/alugueis/checkout` | CONSUMIDOR | agora com `aceite_termos` e `assinatura_base64` |
+| `GET /api/alugueis/:id/contrato` | dono do pedido / ADMIN | PDF do contrato |
+| `GET/POST /api/alugueis/:id/extensoes` | CONSUMIDOR | lista e solicita extensão |
+| `PATCH /api/alugueis/:id/extensoes/:extId` | CACAMBEIRO | `{ "acao": "ACEITAR" \| "RECUSAR" }` |
+| `POST/GET /api/alugueis/:id/extensoes/:extId/pix` | CONSUMIDOR | PIX da extensão (24 h após o aceite) |
+| `GET/POST /api/extensoes/resposta/:token` | link do e-mail | caçambeiro responde sem login |
+| `POST /api/internal/jobs/extensoes` | cron (`x-jobs-secret`) | expira prazos vencidos |
+
+### E-mail
+
+O envio usa a API HTTPS do Brevo (plano gratuito), sem SMTP. Passos:
+
+1. Crie a conta no Brevo e gere uma chave em *SMTP & API > API Keys*.
+2. Em *Senders*, cadastre e verifique o remetente (`EMAIL_FROM`).
+3. Defina `BREVO_API_KEY` e `EMAIL_FROM` no ambiente.
+
+Sem `BREVO_API_KEY` o sistema só registra os e-mails no log (driver `console`).
+E-mails são enviados no pedido criado (com o contrato em PDF), pagamento, entrega, retirada,
+finalização e em cada passo da extensão. Uma falha de envio nunca derruba a operação.
+
+### Prazos de extensão
+
+- O caçambeiro tem 48 h para responder; depois disso o pedido expira.
+- Aceita a extensão, o consumidor tem 24 h para pagar; depois disso a renovação é cancelada.
+- O Render gratuito hiberna, então os prazos também são conferidos ao consultar o pedido.
+  Para garantir os e-mails de cancelamento, agende um cron gratuito (ex.: cron-job.org) a cada
+  15 minutos chamando `POST /api/internal/jobs/extensoes` com o header `x-jobs-secret`.

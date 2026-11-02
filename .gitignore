@@ -12,3 +12,8 @@ tests/
 __tests__/
 
 .kiro/
+
+# Arquivos enviados: fotos (storage/public) e assinaturas (storage/private/assinaturas)
+# ficam versionados de propósito (prova de conceito). Os PDFs dos contratos
+# têm CPF/endereço e podem ser gerados de novo a partir do banco, então não sobem.
+storage/private/contratos/
