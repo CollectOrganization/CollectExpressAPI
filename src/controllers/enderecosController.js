@@ -5,6 +5,24 @@ const {
   sendError,
 } = require("../utils/apiResponse");
 
+const {
+  geocodificarEndereco,
+} = require("../services/geocodingService");
+
+/**
+ * Coordenadas do endereço (para a área de atendimento). Se o serviço de
+ * mapas não responder, o endereço é salvo sem coordenadas e localizado
+ * depois, quando for necessário (ex.: no checkout).
+ */
+async function localizarEndereco(endereco) {
+  try {
+    return await geocodificarEndereco(endereco);
+  } catch (error) {
+    console.error("Falha ao localizar endereço:", error.message);
+    return null;
+  }
+}
+
 const enderecosController = {
   /**
    * GET /api/enderecos
@@ -24,6 +42,8 @@ const enderecosController = {
           numero,
           bairro,
           cidade_estado,
+          latitude,
+          longitude,
           criado_em
         FROM enderecos
         WHERE usuario_id = ${usuarioId}
@@ -100,6 +120,14 @@ const enderecosController = {
       const bairroNormalizado = bairro?.trim() || "";
       const cidadeEstadoNormalizado = cidade_estado.trim();
 
+      const coordenadas = await localizarEndereco({
+        cep: cepNormalizado,
+        logradouro: logradouroNormalizado,
+        numero: numeroNormalizado,
+        bairro: bairroNormalizado,
+        cidade_estado: cidadeEstadoNormalizado,
+      });
+
       const resultado = await sql`
         INSERT INTO enderecos (
           id,
@@ -108,7 +136,9 @@ const enderecosController = {
           logradouro,
           numero,
           bairro,
-          cidade_estado
+          cidade_estado,
+          latitude,
+          longitude
         )
         VALUES (
           gen_random_uuid(),
@@ -117,7 +147,9 @@ const enderecosController = {
           ${logradouroNormalizado},
           ${numeroNormalizado},
           ${bairroNormalizado},
-          ${cidadeEstadoNormalizado}
+          ${cidadeEstadoNormalizado},
+          ${coordenadas?.latitude ?? null},
+          ${coordenadas?.longitude ?? null}
         )
         RETURNING
           id,
@@ -126,6 +158,8 @@ const enderecosController = {
           numero,
           bairro,
           cidade_estado,
+          latitude,
+          longitude,
           criado_em
       `;
 
@@ -226,6 +260,15 @@ const enderecosController = {
       * usuário autenticado. Essa segunda verificação protege contra
       * alterações entre a consulta anterior e este comando.
       */
+      // O endereço mudou: as coordenadas antigas não valem mais.
+      const coordenadas = await localizarEndereco({
+        cep: cep.replace(/\D/g, ""),
+        logradouro: logradouro.trim(),
+        numero: numero.trim(),
+        bairro: (bairro || "").trim(),
+        cidade_estado: cidade_estado.trim(),
+      });
+
       const resultado = await sql`
         UPDATE enderecos
         SET
@@ -233,7 +276,9 @@ const enderecosController = {
           logradouro = ${logradouro.trim()},
           numero = ${numero.trim()},
           bairro = ${(bairro || "").trim()},
-          cidade_estado = ${cidade_estado.trim()}
+          cidade_estado = ${cidade_estado.trim()},
+          latitude = ${coordenadas?.latitude ?? null},
+          longitude = ${coordenadas?.longitude ?? null}
         WHERE id = ${id}
           AND usuario_id = ${usuarioId}
         RETURNING
@@ -243,6 +288,8 @@ const enderecosController = {
           numero,
           bairro,
           cidade_estado,
+          latitude,
+          longitude,
           criado_em
       `;
 

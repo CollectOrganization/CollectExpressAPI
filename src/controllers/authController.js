@@ -924,7 +924,7 @@ const authController = {
             ${usuario.id},
             ${horario_inicio},
             ${horario_fim},
-            ${raio_entrega_km},
+            ${raio_entrega_km ?? null},
             ${taxa_entrega}
           )
         `;

@@ -38,11 +38,15 @@ function validateSupplierRegistration(req, res, next) {
       "O horário final deve ser posterior ao inicial.";
   }
 
+  // O raio agora é definido no mapa (área de atendimento). Se vier,
+  // continua precisando ser válido.
   if (
-    typeof raio_entrega_km !== "number" ||
-    !Number.isFinite(raio_entrega_km) ||
-    raio_entrega_km < 1 ||
-    raio_entrega_km > 200
+    raio_entrega_km !== undefined &&
+    raio_entrega_km !== null &&
+    (typeof raio_entrega_km !== "number" ||
+      !Number.isFinite(raio_entrega_km) ||
+      raio_entrega_km < 1 ||
+      raio_entrega_km > 200)
   ) {
     fields.raio_entrega_km =
       "O raio deve estar entre 1 e 200 km.";

@@ -179,15 +179,13 @@ function validateCacambeiroDetails(req, res, next) {
     });
   }
 
+  // O raio agora é definido no mapa (área de atendimento), depois do
+  // cadastro. Se vier, continua precisando ser válido.
   if (
     raio_entrega_km === undefined ||
     raio_entrega_km === null
   ) {
-    errors.push({
-      campo: "raio_entrega_km",
-      mensagem:
-        "O campo 'raio_entrega_km' é obrigatório",
-    });
+    // opcional
   } else if (
     typeof raio_entrega_km !== "number" ||
     Number.isNaN(raio_entrega_km)
