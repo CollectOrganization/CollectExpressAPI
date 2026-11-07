@@ -23,10 +23,19 @@ const {
 } = require("../services/contratoService");
 const extensaoService = require("../services/extensaoService");
 const {
+  coordenadasValidas,
+  lerArea,
+  avaliarPonto,
+} = require("../services/areaAtendimentoService");
+const {
+  geocodificarEndereco,
+} = require("../services/geocodingService");
+const {
   EVENTOS,
   EVENTO_POR_STATUS,
   notificar,
 } = require("../services/notificacaoService");
+const chatService = require("../services/chatService");
 
 /** Resumo do contrato para o detalhe do pedido (null se não houver). */
 async function resumoDoContrato(aluguelId) {
@@ -240,7 +249,15 @@ const alugueisController = {
        * durante o checkout.
        */
       const enderecos = await sql`
-        SELECT id
+        SELECT
+          id,
+          cep,
+          logradouro,
+          numero,
+          bairro,
+          cidade_estado,
+          latitude,
+          longitude
         FROM enderecos
         WHERE id = ${enderecoId}
           AND usuario_id = ${consumidorId}
@@ -262,11 +279,20 @@ const alugueisController = {
        *
        * A consulta atômica abaixo fará a mesma proteção novamente,
        * incluindo bloqueio contra checkouts concorrentes.
+       *
+       * A cerca do caçambeiro vem junto para validar a área de
+       * atendimento logo abaixo.
        */
       const carrinhos = await sql`
-        SELECT id
-        FROM carrinho
-        WHERE consumidor_id = ${consumidorId}
+        SELECT
+          c.id,
+          dc.centro_lat,
+          dc.centro_lng,
+          dc.raio_entrega_km
+        FROM carrinho c
+        LEFT JOIN detalhes_cacambeiro dc
+          ON dc.usuario_id = c.cacambeiro_id
+        WHERE c.consumidor_id = ${consumidorId}
         LIMIT 1
       `;
 
@@ -277,6 +303,58 @@ const alugueisController = {
           "O carrinho está vazio.",
           "EMPTY_CART",
         );
+      }
+
+      /*
+       * Área de atendimento. O servidor decide: o app só esconde as
+       * caçambas, mas um pedido direto na API também precisa respeitar
+       * a cerca. Caçambeiro sem cerca definida atende todos.
+       */
+      const area = lerArea(carrinhos[0]);
+
+      if (area.definida) {
+        let ponto = {
+          latitude: enderecos[0].latitude,
+          longitude: enderecos[0].longitude,
+        };
+
+        // Endereço antigo, sem coordenadas: localiza agora e guarda.
+        if (!coordenadasValidas(ponto.latitude, ponto.longitude)) {
+          const localizado = await geocodificarEndereco(enderecos[0]);
+
+          if (localizado) {
+            ponto = localizado;
+
+            await sql`
+              UPDATE enderecos
+              SET
+                latitude = ${localizado.latitude},
+                longitude = ${localizado.longitude}
+              WHERE id = ${enderecoId}
+                AND usuario_id = ${consumidorId}
+            `;
+          }
+        }
+
+        const avaliacaoDaArea = avaliarPonto(area, ponto);
+
+        if (avaliacaoDaArea.dentro === null) {
+          return sendError(
+            res,
+            422,
+            "Não conseguimos localizar este endereço no mapa. Confira o CEP, a rua e o número e tente de novo.",
+            "ADDRESS_NOT_LOCATED",
+          );
+        }
+
+        if (avaliacaoDaArea.dentro === false) {
+          return sendError(
+            res,
+            422,
+            `Este fornecedor não atende o endereço escolhido (${avaliacaoDaArea.distanciaKm} km de distância; ele atende até ${area.raioKm} km). Escolha outro endereço ou outro fornecedor.`,
+            "OUT_OF_SERVICE_AREA",
+          );
+        }
       }
 
       /*
@@ -523,6 +601,17 @@ const alugueisController = {
         contratoPdf,
       });
 
+      // Conversa entre cliente e fornecedor, ligada a este pedido. Se
+      // falhar, ela é criada quando alguém abrir o chat do pedido.
+      chatService
+        .garantirConversaDoPedido(pedidos[0].id)
+        .catch((erro) =>
+          console.error(
+            "Pedido criado, mas a conversa não foi criada:",
+            erro.message,
+          ),
+        );
+
       return sendSuccess(
         res,
         {
@@ -637,7 +726,6 @@ const alugueisController = {
         SELECT
           a.*,
           u.nome_completo AS consumidor_nome,
-          u.telefone AS consumidor_telefone,
           e.logradouro,
           e.numero,
           e.bairro,
@@ -945,6 +1033,18 @@ const alugueisController = {
         // Avisa o consumidor da nova etapa, sem bloquear a resposta.
         notificar(EVENTO_POR_STATUS[novoStatus], id);
 
+        // Depois de finalizado, a conversa ainda aceita mensagens por 7 dias.
+        if (novoStatus === "FINALIZADO") {
+          chatService
+            .registrarFimDoPedido(id)
+            .catch((erro) =>
+              console.error(
+                "Erro ao registrar o fim da conversa do pedido:",
+                erro.message,
+              ),
+            );
+        }
+
         // Fora de EM_USO não faz sentido esperar resposta a uma extensão.
         if (novoStatus !== "EM_USO") {
           extensaoService
@@ -1062,11 +1162,9 @@ const alugueisController = {
 
           consumidor.nome_completo AS consumidor_nome,
           consumidor.email AS consumidor_email,
-          consumidor.telefone AS consumidor_telefone,
 
           cacambeiro.nome_completo AS cacambeiro_nome,
           cacambeiro.email AS cacambeiro_email,
-          cacambeiro.telefone AS cacambeiro_telefone,
 
           e.cep,
           e.logradouro,
@@ -1234,14 +1332,12 @@ const alugueisController = {
           id: pedido.consumidor_id,
           nome_completo: pedido.consumidor_nome,
           email: pedido.consumidor_email,
-          telefone: pedido.consumidor_telefone,
         },
 
         cacambeiro: {
           id: pedido.cacambeiro_id,
           nome_completo: pedido.cacambeiro_nome,
           email: pedido.cacambeiro_email,
-          telefone: pedido.cacambeiro_telefone,
           horario_inicio: pedido.horario_inicio,
           horario_fim: pedido.horario_fim,
         },

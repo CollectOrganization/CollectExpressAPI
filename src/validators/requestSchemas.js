@@ -405,11 +405,82 @@ const schemas = {
     },
   },
 
+  updateServiceArea: {
+    latitude: {
+      required: true,
+      type: "number",
+      min: -90,
+      max: 90,
+    },
+    longitude: {
+      required: true,
+      type: "number",
+      min: -180,
+      max: 180,
+    },
+    raio_km: {
+      required: true,
+      type: "number",
+      min: 1,
+      max: 200,
+    },
+  },
+
   uploadAssinatura: {
     assinatura_base64: {
       required: true,
       type: "string",
       maxLength: 420000,
+    },
+  },
+
+  chatSendMessage: {
+    texto: {
+      required: true,
+      type: "string",
+      minLength: 1,
+      maxLength: 1000,
+    },
+  },
+
+  chatOpenTicket: {
+    assunto: {
+      required: true,
+      type: "string",
+      minLength: 1,
+      maxLength: 120,
+    },
+    mensagem: {
+      required: true,
+      type: "string",
+      minLength: 1,
+      maxLength: 1000,
+    },
+    aluguel_id: {
+      required: false,
+      type: "string",
+      format: "uuid",
+    },
+  },
+
+  chatReport: {
+    motivo: {
+      required: false,
+      type: "string",
+      maxLength: 300,
+    },
+  },
+
+  chatListQuery: {
+    tipo: {
+      required: false,
+      type: "string",
+      enum: ["PEDIDO", "SUPORTE_CACAMBEIRO", "CHAMADO"],
+    },
+    status: {
+      required: false,
+      type: "string",
+      enum: ["ABERTA", "FECHADA"],
     },
   },
 

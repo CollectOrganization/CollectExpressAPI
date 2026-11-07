@@ -16,6 +16,9 @@ jest.mock("../src/services/notificacaoService", () => ({
   notificar: jest.fn(),
 }));
 
+jest.mock("../src/services/geocodingService", () => ({
+  geocodificarEndereco: jest.fn(),
+}));
 jest.mock("../src/services/extensaoService", () => ({
   resumoDoPedido: jest.fn(),
   cancelarSolicitacoesAbertas: jest.fn().mockResolvedValue(undefined),
@@ -39,6 +42,7 @@ afterAll(() => {
 
 const sql = require("../src/config/db");
 const contratoService = require("../src/services/contratoService");
+const { geocodificarEndereco } = require("../src/services/geocodingService");
 const { notificar } = require("../src/services/notificacaoService");
 const alugueisController = require("../src/controllers/alugueisController");
 const { png, dataUri } = require("./helpers/imagens");
@@ -302,5 +306,145 @@ describe("atualizarStatus", () => {
 
     expect(res.status).toHaveBeenCalledWith(409);
     expect(notificar).not.toHaveBeenCalled();
+  });
+});
+
+describe("checkout e área de atendimento", () => {
+  // Caçambeiro com centro na Praça da Sé (SP) e raio de 10 km.
+  const carrinhoComArea = {
+    id: "carrinho-1",
+    centro_lat: "-23.550500",
+    centro_lng: "-46.633300",
+    raio_entrega_km: "10.00",
+  };
+
+  const enderecoPerto = {
+    id: "end-1",
+    cep: "01310100",
+    logradouro: "Avenida Paulista",
+    numero: "1000",
+    bairro: "Bela Vista",
+    cidade_estado: "São Paulo - SP",
+    latitude: "-23.564886",
+    longitude: "-46.651918",
+  };
+
+  const enderecoLonge = {
+    ...enderecoPerto,
+    id: "end-2",
+    latitude: "-22.909900",
+    longitude: "-47.062600",
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    sql.mockReset();
+    geocodificarEndereco.mockReset();
+    fs.rmSync(path.join(raiz, "private"), { recursive: true, force: true });
+    jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    console.error.mockRestore();
+  });
+
+  it("endereço dentro da cerca: o pedido segue", async () => {
+    sql
+      .mockResolvedValueOnce([enderecoPerto])
+      .mockResolvedValueOnce([carrinhoComArea])
+      .mockResolvedValueOnce([pedidoCriado]);
+    contratoService.emitirContrato.mockResolvedValueOnce(Buffer.from("%PDF"));
+
+    const res = createResponse();
+    await alugueisController.checkout(criarRequisicao(), res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(geocodificarEndereco).not.toHaveBeenCalled();
+  });
+
+  it("endereço fora da cerca: 422, nada é criado e a assinatura não é gravada", async () => {
+    sql
+      .mockResolvedValueOnce([enderecoLonge])
+      .mockResolvedValueOnce([carrinhoComArea]);
+
+    const res = createResponse();
+    await alugueisController.checkout(criarRequisicao(), res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(res.json.mock.calls[0][0].code).toBe("OUT_OF_SERVICE_AREA");
+    expect(res.json.mock.calls[0][0].message).toMatch(/atende até 10 km/);
+    // Só endereço e carrinho foram consultados; o checkout nem começou.
+    expect(sql).toHaveBeenCalledTimes(2);
+    expect(arquivosDeAssinatura()).toHaveLength(0);
+  });
+
+  it("caçambeiro sem cerca definida atende todo mundo", async () => {
+    sql
+      .mockResolvedValueOnce([enderecoLonge])
+      .mockResolvedValueOnce([
+        { id: "carrinho-1", centro_lat: null, centro_lng: null, raio_entrega_km: "10.00" },
+      ])
+      .mockResolvedValueOnce([pedidoCriado]);
+    contratoService.emitirContrato.mockResolvedValueOnce(Buffer.from("%PDF"));
+
+    const res = createResponse();
+    await alugueisController.checkout(criarRequisicao(), res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+  });
+
+  it("endereço antigo sem coordenadas: localiza, guarda e valida", async () => {
+    geocodificarEndereco.mockResolvedValueOnce({
+      latitude: -23.5649,
+      longitude: -46.6519,
+      precisao: "numero",
+    });
+
+    sql
+      .mockResolvedValueOnce([{ ...enderecoPerto, latitude: null, longitude: null }])
+      .mockResolvedValueOnce([carrinhoComArea])
+      .mockResolvedValueOnce([]) // UPDATE das coordenadas
+      .mockResolvedValueOnce([pedidoCriado]);
+    contratoService.emitirContrato.mockResolvedValueOnce(Buffer.from("%PDF"));
+
+    const res = createResponse();
+    await alugueisController.checkout(criarRequisicao(), res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+
+    const update = sql.mock.calls[2];
+    expect(update[0].join("?")).toContain("UPDATE enderecos");
+    expect(update.slice(1)).toEqual(
+      expect.arrayContaining([-23.5649, -46.6519]),
+    );
+  });
+
+  it("endereço antigo que não dá para localizar: 422 pedindo conferência", async () => {
+    geocodificarEndereco.mockResolvedValueOnce(null);
+
+    sql
+      .mockResolvedValueOnce([{ ...enderecoPerto, latitude: null, longitude: null }])
+      .mockResolvedValueOnce([carrinhoComArea]);
+
+    const res = createResponse();
+    await alugueisController.checkout(criarRequisicao(), res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(res.json.mock.calls[0][0].code).toBe("ADDRESS_NOT_LOCATED");
+    expect(sql).toHaveBeenCalledTimes(2);
+  });
+
+  it("sem cerca, endereço sem coordenadas nem chama o serviço de mapas", async () => {
+    sql
+      .mockResolvedValueOnce([{ ...enderecoPerto, latitude: null, longitude: null }])
+      .mockResolvedValueOnce([{ id: "carrinho-1" }])
+      .mockResolvedValueOnce([pedidoCriado]);
+    contratoService.emitirContrato.mockResolvedValueOnce(Buffer.from("%PDF"));
+
+    const res = createResponse();
+    await alugueisController.checkout(criarRequisicao(), res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(geocodificarEndereco).not.toHaveBeenCalled();
   });
 });

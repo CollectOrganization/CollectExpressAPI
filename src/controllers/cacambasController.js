@@ -9,6 +9,34 @@ const {
   chaveDoCaminhoPublico,
   resolverFotoUrl,
 } = require("../services/storageService");
+const {
+  coordenadasValidas,
+  lerArea,
+  avaliarPonto,
+} = require("../services/areaAtendimentoService");
+
+const ESCOPOS_DE_AREA = ["dentro", "fora", "todas"];
+
+/**
+ * Local de entrega informado na consulta (?latitude=&longitude=).
+ * `null` quando não veio; lança erro de validação se veio quebrado.
+ */
+function lerLocalDaConsulta(query) {
+  const { latitude, longitude } = query;
+
+  if (latitude === undefined && longitude === undefined) {
+    return null;
+  }
+
+  if (!coordenadasValidas(latitude, longitude)) {
+    return undefined;
+  }
+
+  return {
+    latitude: Number(latitude),
+    longitude: Number(longitude),
+  };
+}
 
 const ITEMS_PER_PAGE = 20;
 const MAX_PAGE = 100000;
@@ -248,6 +276,29 @@ const cacambasController = {
       } = req.query;
 
       /*
+       * Local de entrega do cliente. Com ele, o catálogo mostra só o
+       * que o caçambeiro atende (area=dentro, o padrão), só o que fica
+       * fora (area=fora) ou tudo (area=todas). Sem ele, nada é filtrado.
+       */
+      const local = lerLocalDaConsulta(req.query);
+
+      if (local === undefined) {
+        return sendError(
+          res,
+          400,
+          "Informe latitude e longitude válidas.",
+          "INVALID_LOCATION",
+          {
+            latitude: "Informe latitude e longitude válidas.",
+          },
+        );
+      }
+
+      const escopo = ESCOPOS_DE_AREA.includes(req.query.area)
+        ? req.query.area
+        : "dentro";
+
+      /*
       * Condições base — sempre aplicadas.
       *
       * `u.status = 'ATIVO'` já exclui PENDENTE e SUSPENSO.
@@ -286,11 +337,58 @@ const cacambasController = {
         `;
       }
 
+      /*
+       * Cerca do caçambeiro: círculo (centro + raio). Distância em km
+       * pela fórmula de Haversine, calculada no próprio banco para a
+       * paginação continuar correta. Caçambeiro sem cerca definida
+       * atende todo mundo.
+       */
+      const areaDefinida = sql`(
+        dc.centro_lat IS NOT NULL
+        AND dc.centro_lng IS NOT NULL
+        AND dc.raio_entrega_km IS NOT NULL
+      )`;
+
+      let distancia = sql`NULL::float8`;
+
+      if (local) {
+        distancia = sql`(
+          6371 * 2 * ASIN(SQRT(LEAST(1,
+            POWER(SIN(RADIANS(
+              dc.centro_lat::float8 - ${local.latitude}::float8
+            ) / 2), 2)
+            + COS(RADIANS(${local.latitude}::float8))
+              * COS(RADIANS(dc.centro_lat::float8))
+              * POWER(SIN(RADIANS(
+                dc.centro_lng::float8 - ${local.longitude}::float8
+              ) / 2), 2)
+          )))
+        )`;
+
+        if (escopo === "dentro") {
+          conditions = sql`
+            ${conditions}
+            AND (
+              NOT ${areaDefinida}
+              OR ${distancia} <= dc.raio_entrega_km::float8
+            )
+          `;
+        } else if (escopo === "fora") {
+          conditions = sql`
+            ${conditions}
+            AND ${areaDefinida}
+            AND ${distancia} > dc.raio_entrega_km::float8
+          `;
+        }
+      }
+
       const countResult = await sql`
         SELECT COUNT(*)::int AS total
         FROM cacambas ca
         INNER JOIN usuarios u
           ON u.id = ca.cacambeiro_id
+        LEFT JOIN detalhes_cacambeiro dc
+          ON dc.usuario_id = ca.cacambeiro_id
         ${conditions}
       `;
 
@@ -298,10 +396,16 @@ const cacambasController = {
       const totalPages = Math.ceil(total / limit);
 
       const cacambas = await sql`
-        SELECT ca.*
+        SELECT
+          ca.*,
+          ${distancia} AS distancia_km,
+          ${areaDefinida} AS area_definida,
+          dc.raio_entrega_km AS cacambeiro_raio_km
         FROM cacambas ca
         INNER JOIN usuarios u
           ON u.id = ca.cacambeiro_id
+        LEFT JOIN detalhes_cacambeiro dc
+          ON dc.usuario_id = ca.cacambeiro_id
         ${conditions}
         ORDER BY ca.criado_em DESC
         LIMIT ${limit}
@@ -310,10 +414,25 @@ const cacambasController = {
 
       return res.status(200).json({
         success: true,
-        data: cacambas.map((cacamba) => ({
-          ...cacamba,
-          foto_url: resolverFotoUrl(cacamba.foto_url),
-        })),
+        data: cacambas.map(
+          ({
+            distancia_km: distanciaKm,
+            cacambeiro_raio_km: raioKm,
+            ...cacamba
+          }) => ({
+            ...cacamba,
+            foto_url: resolverFotoUrl(cacamba.foto_url),
+            // null quando o app não informou o local de entrega.
+            dentro_da_area: local
+              ? !cacamba.area_definida ||
+                Number(distanciaKm) <= Number(raioKm)
+              : null,
+            distancia_km:
+              local && cacamba.area_definida
+                ? Math.round(Number(distanciaKm) * 10) / 10
+                : null,
+          }),
+        ),
 
         // Compatibilidade com clientes anteriores.
         total,
@@ -467,10 +586,6 @@ const cacambasController = {
 
           u.nome_completo
             AS cacambeiro_nome_completo,
-
-          u.telefone
-            AS cacambeiro_telefone,
-
           dc.horario_inicio
             AS cacambeiro_horario_inicio,
 
@@ -479,6 +594,12 @@ const cacambasController = {
 
           dc.raio_entrega_km
             AS cacambeiro_raio_entrega_km,
+
+          dc.centro_lat
+            AS cacambeiro_centro_lat,
+
+          dc.centro_lng
+            AS cacambeiro_centro_lng,
 
           dc.taxa_entrega
             AS cacambeiro_taxa_entrega
@@ -550,8 +671,6 @@ const cacambasController = {
           id: cacamba.cacambeiro_id,
           nome_completo:
             cacamba.cacambeiro_nome_completo,
-          telefone:
-            cacamba.cacambeiro_telefone,
           horario_inicio:
             cacamba.cacambeiro_horario_inicio,
           horario_fim:
@@ -576,6 +695,24 @@ const cacambasController = {
 
         avaliacoes: reviews,
       };
+
+      /*
+       * Com ?latitude=&longitude= (local de entrega do cliente), diz se
+       * o caçambeiro atende ali. Coordenadas inválidas são ignoradas.
+       */
+      const local = lerLocalDaConsulta(req.query);
+      const avaliacaoDaArea = avaliarPonto(
+        lerArea({
+          centro_lat: cacamba.cacambeiro_centro_lat,
+          centro_lng: cacamba.cacambeiro_centro_lng,
+          raio_entrega_km: cacamba.cacambeiro_raio_entrega_km,
+        }),
+        local ?? undefined,
+      );
+
+      data.area_definida = avaliacaoDaArea.definida;
+      data.dentro_da_area = local ? avaliacaoDaArea.dentro : null;
+      data.distancia_km = local ? avaliacaoDaArea.distanciaKm : null;
 
       return res.status(200).json({
         success: true,

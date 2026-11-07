@@ -821,3 +821,96 @@ finalização e em cada passo da extensão. Uma falha de envio nunca derruba a o
 - O Render gratuito hiberna, então os prazos também são conferidos ao consultar o pedido.
   Para garantir os e-mails de cancelamento, agende um cron gratuito (ex.: cron-job.org) a cada
   15 minutos chamando `POST /api/internal/jobs/extensoes` com o header `x-jobs-secret`.
+
+## Área de atendimento (cerca virtual)
+
+Cada caçambeiro marca no mapa um círculo (centro + raio de 1 a 200 km). O catálogo só mostra ao cliente
+as caçambas de quem atende o endereço dele, e o checkout confere de novo no servidor. Tudo usa serviços
+gratuitos: mapa do OpenStreetMap no app, CEP pela BrasilAPI/ViaCEP e busca de endereço pelo Nominatim.
+
+### Antes de subir esta versão
+
+```bash
+npm run migrate:area   # centro_lat/centro_lng em detalhes_cacambeiro, coordenadas em enderecos, raio opcional
+```
+
+A migração é aditiva e pode ser repetida. O raio deixou de ser obrigatório no cadastro de fornecedor.
+
+### Regras
+
+- Caçambeiro que ainda não definiu a área atende todo mundo (período de transição).
+- `GET /api/cacambas?latitude=&longitude=&area=dentro|fora|todas`: com coordenadas o padrão é `dentro`.
+  Cada item traz `dentro_da_area`, `distancia_km` e `area_definida`. Sem coordenadas não há filtro.
+  Coordenadas inválidas ou só uma delas: `400 INVALID_LOCATION`.
+- `GET /api/cacambas/:id?latitude=&longitude=` devolve as mesmas indicações.
+- Endereços do cliente são geocodificados ao salvar. Endereços antigos são localizados no checkout.
+- Checkout fora da área: `422 OUT_OF_SERVICE_AREA`. Endereço que não foi possível localizar: `422 ADDRESS_NOT_LOCATED`.
+
+### Rotas novas
+
+| Rota | Perfil | Descrição |
+|---|---|---|
+| `GET /api/localizacao/cep/:cep` | público (20 req/min) | endereço e coordenadas do CEP (`INVALID_CEP`, `CEP_NOT_FOUND`, `GEOCODING_UNAVAILABLE`) |
+| `GET/PUT /api/cacambeiros/me/area` | CACAMBEIRO | cerca atual / salvar `{ latitude, longitude, raio_km }` |
+| `GET /api/cacambeiros/me/pendencias` | CACAMBEIRO | `pendencias`: `AREA_ATENDIMENTO` e/ou `ASSINATURA` (o app avisa ao entrar) |
+
+### Limites dos serviços gratuitos
+
+O Nominatim permite 1 requisição por segundo e exige identificação: defina `GEOCODING_CONTACT` (e-mail ou site; se vazio, usa `EMAIL_FROM`).
+Respostas ficam em cache por 12 h. Os mapas públicos do OpenStreetMap são para uso leve; para muito tráfego,
+troque a URL dos tiles no app por um provedor próprio.
+
+## Chat entre cliente, caçambeiro e equipe
+
+Chat só de texto (até 1.000 caracteres) que substitui o contato por telefone. O telefone deixou de ser
+devolvido nas respostas de caçambas, fornecedores e pedidos; ele continua só no cadastro e na gestão de usuários do admin.
+
+### Antes de subir esta versão
+
+```bash
+npm run migrate:chat   # conversas, mensagens, denuncias_chat e chat_acessos_admin
+```
+
+A migração é aditiva e pode ser repetida. Ela já cria a conversa dos pedidos em andamento.
+
+### Tipos de conversa
+
+| Tipo | Partes | Regra |
+|---|---|---|
+| `PEDIDO` | cliente x caçambeiro | uma por pedido, criada no checkout; segue aberta por 7 dias depois do pedido finalizado e então vira só leitura |
+| `SUPORTE_CACAMBEIRO` | caçambeiro x equipe | uma por caçambeiro, livre, com histórico |
+| `CHAMADO` | cliente x equipe | aberto pelo cliente (um por vez, com pedido opcional) e fechado por um admin; não há reabertura |
+
+A equipe é compartilhada: qualquer admin lê e responde, e a mensagem conta como lida para todos quando um deles abre a
+conversa. Nas conversas de `PEDIDO` o admin só lê (`ADMIN_READ_ONLY`) e cada abertura fica em `chat_acessos_admin`.
+
+### Rotas (`/api/chat`, todas autenticadas)
+
+| Rota | Perfil | Descrição |
+|---|---|---|
+| `GET /conversas?tipo=&status=&denunciadas=&busca=&page=` | todos | lista com última mensagem e `nao_lidas`; `denunciadas` e `busca` só para admin |
+| `GET /nao-lidas` | todos | `{ conversas, mensagens }` para as bolhas |
+| `GET /conversas/:id` | participantes e admin | detalhe, com o resumo do pedido vinculado (sem telefone) |
+| `GET /conversas/:id/mensagens?depois=&antes=&limite=` | participantes e admin | abrir marca como lidas as mensagens do outro lado |
+| `POST /conversas/:id/mensagens` | participantes | `{ texto }`; limite de 30 por minuto por usuário |
+| `POST /pedidos/:id/conversa` | cliente, caçambeiro, admin | abre (ou cria) a conversa do pedido |
+| `POST /chamados` | CONSUMIDOR | `{ assunto, mensagem, aluguel_id? }`; `409 CHAMADO_ALREADY_OPEN` se já houver um aberto |
+| `PATCH /chamados/:id/fechar` | ADMIN | encerra o chamado |
+| `POST /conversas/:id/denunciar` | participantes | `{ motivo? }`; avisa todos os admins por e-mail; uma por usuário a cada 24 h |
+| `PATCH /conversas/:id/denuncia` | ADMIN | marca a denúncia como analisada |
+| `POST /api/internal/jobs/chat` | cron (`x-jobs-secret`) | envia os avisos de mensagens sem leitura |
+
+Quem não participa recebe `404 CONVERSATION_NOT_FOUND`, igual a uma conversa que não existe.
+
+### Aviso por e-mail
+
+Mensagem sem leitura há mais de 8 horas gera um e-mail para o destinatário (para a equipe, todos os admins ativos):
+
+- um e-mail por pessoa em cada rodada, listando as conversas;
+- só avisa de novo depois que a pessoa lê tudo e chega mensagem nova;
+- o e-mail não leva o texto das mensagens;
+- chamado fechado não gera aviso para a equipe, e contas suspensas não recebem.
+
+A API confere sozinha a cada 15 minutos enquanto está acordada. No Render gratuito, que hiberna, agende um cron
+(ex.: cron-job.org) a cada 15 minutos em `POST /api/internal/jobs/chat` com o header `x-jobs-secret`, como já é feito
+para as extensões. Denúncias avisam os admins na hora.

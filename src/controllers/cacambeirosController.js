@@ -505,7 +505,6 @@ const cacambeirosController = {
         SELECT
           u.id,
           u.nome_completo,
-          u.telefone,
           d.horario_inicio,
           d.horario_fim,
           d.raio_entrega_km,
@@ -543,7 +542,6 @@ const cacambeirosController = {
         GROUP BY
           u.id,
           u.nome_completo,
-          u.telefone,
           d.horario_inicio,
           d.horario_fim,
           d.raio_entrega_km,
@@ -589,7 +587,6 @@ const cacambeirosController = {
         SELECT
           u.id,
           u.nome_completo,
-          u.telefone,
           d.horario_inicio,
           d.horario_fim,
           d.raio_entrega_km,
@@ -619,7 +616,6 @@ const cacambeirosController = {
         GROUP BY
           u.id,
           u.nome_completo,
-          u.telefone,
           d.horario_inicio,
           d.horario_fim,
           d.raio_entrega_km,

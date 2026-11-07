@@ -27,6 +27,10 @@ const materiaisRoutes = require("./routes/materiaisRoutes");
 const parceirosRoutes = require("./routes/parceirosRoutes");
 const coletasRoutes = require("./routes/coletasRoutes");
 const extensoesRoutes = require("./routes/extensoesRoutes");
+const localizacaoRoutes = require("./routes/localizacaoRoutes");
+const chatRoutes = require("./routes/chatRoutes");
+const chatController = require("./controllers/chatController");
+const { iniciarVarreduraDoChat } = require("./services/chatService");
 const extensoesController = require("./controllers/extensoesController");
 
 // Cria a limpeza dos tokens
@@ -253,12 +257,17 @@ app.use("/api/materiais", materiaisRoutes);
 app.use("/api/parceiros", parceirosRoutes);
 app.use("/api/coletas", coletasRoutes);
 app.use("/api/extensoes", extensoesRoutes);
+app.use("/api/localizacao", localizacaoRoutes);
+app.use("/api/chat", chatRoutes);
 
 // Chamada por um cron externo (header x-jobs-secret = JOBS_SECRET).
 app.post(
   "/api/internal/jobs/extensoes",
   extensoesController.rodarVarredura,
 );
+
+// Avisa por e-mail quem deixou mensagens do chat sem ler por 8 horas.
+app.post("/api/internal/jobs/chat", chatController.rodarVarredura);
 
 /**
  * Estes middlewares devem permanecer depois de todas as rotas.
@@ -280,6 +289,9 @@ startTokenCleanup();
 
 // Expira pedidos de extensão sem resposta e pagamentos fora do prazo.
 iniciarVarreduraDeExtensoes();
+
+// Avisa por e-mail mensagens do chat sem leitura há mais de 8 horas.
+iniciarVarreduraDoChat();
 
 app.listen(PORT, () => {
   console.log(`API disponível em http://localhost:${PORT}/api`);
