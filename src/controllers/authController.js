@@ -36,6 +36,7 @@ const {
 const PUBLIC_PROFILES = [
   "CONSUMIDOR",
   "CACAMBEIRO",
+  "PARCEIRO",
 ];
 
 /**
@@ -179,6 +180,10 @@ const authController = {
         horario_fim,
         raio_entrega_km,
         taxa_entrega,
+        responsavel_nome,
+        endereco_coleta,
+        capacidade_diaria_kg,
+        materiais_ids,
       } = req.body;
 
       /*
@@ -230,7 +235,7 @@ const authController = {
        * SUSPENSO
        */
       const statusInicial =
-        tipo_perfil === "CACAMBEIRO"
+        tipo_perfil === "CACAMBEIRO" || tipo_perfil === "PARCEIRO"
           ? "PENDENTE"
           : "ATIVO";
 
@@ -294,6 +299,34 @@ const authController = {
           FROM novo_usuario
           WHERE tipo_perfil = 'CACAMBEIRO'
           RETURNING usuario_id
+        ),
+
+        novos_detalhes_parceiro AS (
+          INSERT INTO detalhes_parceiro (
+            usuario_id,
+            responsavel_nome,
+            endereco_coleta,
+            capacidade_diaria_kg
+          )
+          SELECT
+            id,
+            ${responsavel_nome ?? null},
+            ${endereco_coleta ?? null},
+            ${capacidade_diaria_kg ?? null}
+          FROM novo_usuario
+          WHERE tipo_perfil = 'PARCEIRO'
+          RETURNING usuario_id
+        ),
+
+        novos_materiais_parceiro AS (
+          INSERT INTO parceiro_materiais (parceiro_id, material_id)
+          SELECT novo_usuario.id, m.id
+          FROM novo_usuario
+          INNER JOIN materiais_reciclaveis m
+            ON m.id = ANY(${materiais_ids ?? []}::uuid[])
+          WHERE novo_usuario.tipo_perfil = 'PARCEIRO'
+            AND EXISTS (SELECT 1 FROM novos_detalhes_parceiro)
+          RETURNING parceiro_id
         )
 
         SELECT *
@@ -303,7 +336,7 @@ const authController = {
       const usuario = resultado[0];
 
       const message =
-        tipo_perfil === "CACAMBEIRO"
+        tipo_perfil === "CACAMBEIRO" || tipo_perfil === "PARCEIRO"
           ? "Cadastro enviado para aprovação."
           : "Cadastro realizado com sucesso.";
 

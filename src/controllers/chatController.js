@@ -121,6 +121,21 @@ const chatController = {
     }
   },
 
+  /** POST /api/chat/coletas/:id/conversa */
+  async conversaDaColeta(req, res) {
+    try {
+      return sendSuccess(
+        res,
+        await chatService.conversaDaColeta(
+          chatService.usuarioDaRequisicao(req),
+          req.params.id,
+        ),
+      );
+    } catch (error) {
+      return tratarErro(res, error, "Erro ao abrir conversa da coleta:");
+    }
+  },
+
   /** POST /api/chat/chamados  { assunto, mensagem, aluguel_id? } */
   async abrirChamado(req, res) {
     try {

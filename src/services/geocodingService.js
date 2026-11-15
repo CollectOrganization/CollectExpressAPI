@@ -134,6 +134,15 @@ function separarCidadeEstado(cidadeEstado) {
     : { cidade: texto, uf: "" };
 }
 
+/** Servidor da URL, sem caminho nem CEP (nada pessoal vai para o log). */
+function servidorDe(url) {
+  try {
+    return new URL(url).host;
+  } catch (_) {
+    return "serviço de endereços";
+  }
+}
+
 async function pedirJson(url, opcoes = {}) {
   let resposta;
 
@@ -143,7 +152,11 @@ async function pedirJson(url, opcoes = {}) {
       headers: { Accept: "application/json", ...(opcoes.headers ?? {}) },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-  } catch (_) {
+  } catch (erro) {
+    // Ponto de falha: o serviço externo não respondeu (cai em logs_erros).
+    console.warn(
+      `[endereços] ${servidorDe(url)} não respondeu: ${erro?.name ?? "erro"}`,
+    );
     throw new GeocodingUnavailableError();
   }
 
@@ -153,12 +166,18 @@ async function pedirJson(url, opcoes = {}) {
   }
 
   if (!resposta.ok) {
+    console.warn(
+      `[endereços] ${servidorDe(url)} respondeu HTTP ${resposta.status}`,
+    );
     throw new GeocodingUnavailableError();
   }
 
   try {
     return await resposta.json();
   } catch (_) {
+    console.warn(
+      `[endereços] ${servidorDe(url)} devolveu uma resposta que não é JSON`,
+    );
     throw new GeocodingUnavailableError();
   }
 }
@@ -268,6 +287,7 @@ async function buscarCep(cepInformado) {
 
   // Os dois serviços falharam (não é "CEP inexistente").
   if (!endereco && falhas >= 2) {
+    console.warn("[endereços] BrasilAPI e ViaCEP falharam na busca de CEP.");
     throw new GeocodingUnavailableError();
   }
 

@@ -24,6 +24,9 @@
     "migrate:extensoes": "node src/scripts/extensoesMigration.js",
     "migrate:area": "node src/scripts/areaAtendimentoMigration.js",
     "migrate:chat": "node src/scripts/chatMigration.js",
+    "migrate:reciclagem": "node src/scripts/reciclagemMigration.js",
+    "migrate:logs": "node src/scripts/logsMigration.js",
+    "logs:ver": "node src/scripts/verLogs.js",
     "test:seed": "node src/scripts/testSeed.js",
     "test": "jest",
     "test:watch": "jest --watch"

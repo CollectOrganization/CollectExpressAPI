@@ -50,7 +50,7 @@ const schemas = {
     tipo_perfil: {
       required: true,
       type: "string",
-      enum: ["CONSUMIDOR", "CACAMBEIRO"],
+      enum: ["CONSUMIDOR", "CACAMBEIRO", "PARCEIRO"],
     },
     documento: {
       required: true,
@@ -405,6 +405,25 @@ const schemas = {
     },
   },
 
+  updateSupplierDetails: {
+    horario_inicio: {
+      required: false,
+      type: "string",
+      format: "time",
+    },
+    horario_fim: {
+      required: false,
+      type: "string",
+      format: "time",
+    },
+    taxa_entrega: {
+      required: false,
+      type: "number",
+      min: 0.01,
+      max: 99999.99,
+    },
+  },
+
   updateServiceArea: {
     latitude: {
       required: true,
@@ -434,6 +453,27 @@ const schemas = {
     },
   },
 
+  recyclingOffer: {
+    materiais_ids: { required: true, type: "array" },
+    descricao: { required: true, type: "string", maxLength: 1000 },
+    quantidade_estimada: { required: true, type: "string", maxLength: 100 },
+    observacoes: { required: false, type: "string", maxLength: 500 },
+    endereco_id: { required: true, type: "string", format: "uuid" },
+    janela_inicio: { required: true, type: "string" },
+    janela_fim: { required: true, type: "string" },
+    aceite_termos: { required: true, type: "boolean" },
+    assinatura_base64: {
+      required: false,
+      type: "string",
+      maxLength: 420000,
+    },
+  },
+
+  scheduleCollection: {
+    oferta_id: { required: true, type: "string", format: "uuid" },
+    data_agendada: { required: true, type: "string" },
+    observacoes: { required: false, type: "string", maxLength: 500 },
+  },
   chatSendMessage: {
     texto: {
       required: true,
@@ -475,7 +515,7 @@ const schemas = {
     tipo: {
       required: false,
       type: "string",
-      enum: ["PEDIDO", "SUPORTE_CACAMBEIRO", "CHAMADO"],
+      enum: ["PEDIDO", "SUPORTE_CACAMBEIRO", "CHAMADO", "COLETA"],
     },
     status: {
       required: false,

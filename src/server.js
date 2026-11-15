@@ -1,5 +1,10 @@
 require("dotenv").config();
 
+// Antes de tudo: o que o código mandar para console.error/warn também vai
+// para a tabela logs_erros (veja services/logService.js).
+const logService = require("./services/logService");
+logService.instalarCapturaDoConsole();
+
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -29,6 +34,10 @@ const coletasRoutes = require("./routes/coletasRoutes");
 const extensoesRoutes = require("./routes/extensoesRoutes");
 const localizacaoRoutes = require("./routes/localizacaoRoutes");
 const chatRoutes = require("./routes/chatRoutes");
+const ofertasColetaRoutes = require("./routes/ofertasColetaRoutes");
+const logsRoutes = require("./routes/logsRoutes");
+const reciclagemController = require("./controllers/reciclagemJobController");
+const { iniciarVarreduraDeReciclagem } = require("./services/reciclagemService");
 const chatController = require("./controllers/chatController");
 const { iniciarVarreduraDoChat } = require("./services/chatService");
 const extensoesController = require("./controllers/extensoesController");
@@ -61,6 +70,12 @@ app.disable("x-powered-by");
  * - protocolo HTTPS atrás de proxy.
  */
 app.set("trust proxy", 1);
+
+/**
+ * Registra respostas com erro (400 ou mais) e requisições lentas em
+ * logs_erros, e guarda o contexto da requisição para os demais logs.
+ */
+app.use(logService.logMiddleware);
 
 /**
  * Adiciona headers HTTP de segurança.
@@ -155,13 +170,16 @@ app.use(
 /**
  * Rate limit global.
  *
- * Cada IP poderá realizar no máximo 100 requisições por minuto.
+ * Cada IP poderá realizar no máximo 300 requisições por minuto (ajuste
+ * com GLOBAL_RATE_LIMIT). O limite é por IP e várias pessoas na mesma
+ * rede dividem a cota; o app consulta o chat e as não lidas de tempos
+ * em tempos, então 100 por minuto estourava com poucos usuários juntos.
  * Login, cadastro e recuperação de senha também terão limitadores
  * específicos definidos em authRoutes.js.
  */
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 100,
+  limit: Number(process.env.GLOBAL_RATE_LIMIT) || 300,
   standardHeaders: true,
   legacyHeaders: false,
   handler(req, res) {
@@ -259,6 +277,8 @@ app.use("/api/coletas", coletasRoutes);
 app.use("/api/extensoes", extensoesRoutes);
 app.use("/api/localizacao", localizacaoRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/ofertas-coleta", ofertasColetaRoutes);
+app.use("/api/logs", logsRoutes);
 
 // Chamada por um cron externo (header x-jobs-secret = JOBS_SECRET).
 app.post(
@@ -268,6 +288,9 @@ app.post(
 
 // Avisa por e-mail quem deixou mensagens do chat sem ler por 8 horas.
 app.post("/api/internal/jobs/chat", chatController.rodarVarredura);
+
+// Expira sinalizações vencidas e envia lembretes das coletas de amanhã.
+app.post("/api/internal/jobs/reciclagem", reciclagemController.rodarVarredura);
 
 /**
  * Estes middlewares devem permanecer depois de todas as rotas.
@@ -292,6 +315,13 @@ iniciarVarreduraDeExtensoes();
 
 // Avisa por e-mail mensagens do chat sem leitura há mais de 8 horas.
 iniciarVarreduraDoChat();
+
+// Expira sinalizações de reciclagem vencidas e lembra das coletas próximas.
+iniciarVarreduraDeReciclagem();
+
+// Registra variáveis ausentes e apaga logs antigos (padrão: 30 dias).
+logService.registrarInicializacao();
+logService.iniciarLimpezaDosLogs();
 
 app.listen(PORT, () => {
   console.log(`API disponível em http://localhost:${PORT}/api`);

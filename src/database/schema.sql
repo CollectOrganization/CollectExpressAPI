@@ -563,3 +563,199 @@ CREATE TABLE IF NOT EXISTS chat_acessos_admin (
   conversa_id UUID NOT NULL REFERENCES conversas(id) ON DELETE CASCADE,
   criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Reciclagem: parceiro, sinalizações, coletas e conversa da coleta.
+-- Veja src/scripts/reciclagemMigration.js (que também cadastra os materiais iniciais).
+
+ALTER TYPE tipo_perfil ADD VALUE IF NOT EXISTS 'PARCEIRO';
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+CREATE TABLE IF NOT EXISTS materiais_reciclaveis (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  nome VARCHAR(100) NOT NULL,
+  descricao TEXT,
+  icone_url VARCHAR(500),
+  tipos_aceitos TEXT[] NOT NULL DEFAULT '{}',
+  tipos_nao_aceitos TEXT[] NOT NULL DEFAULT '{}',
+  impacto_energia INTEGER NOT NULL DEFAULT 0,
+  impacto_co2 INTEGER NOT NULL DEFAULT 0,
+  tempo_decomposicao VARCHAR(50),
+  criado_em TIMESTAMP NOT NULL DEFAULT NOW(),
+  CONSTRAINT materiais_reciclaveis_nome_unique UNIQUE (nome)
+);
+
+ALTER TABLE detalhes_parceiro
+ADD COLUMN IF NOT EXISTS responsavel_nome VARCHAR(150),
+ADD COLUMN IF NOT EXISTS assinatura_path VARCHAR(500),
+ADD COLUMN IF NOT EXISTS assinatura_atualizada_em TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS centro_lat NUMERIC(9, 6),
+ADD COLUMN IF NOT EXISTS centro_lng NUMERIC(9, 6),
+ADD COLUMN IF NOT EXISTS raio_atuacao_km NUMERIC(5, 2),
+ADD COLUMN IF NOT EXISTS area_atualizada_em TIMESTAMPTZ;
+
+ALTER TABLE detalhes_parceiro
+ALTER COLUMN capacidade_diaria_kg DROP NOT NULL,
+ALTER COLUMN materiais_aceitos DROP NOT NULL;
+
+DO $$
+BEGIN
+  ALTER TABLE detalhes_parceiro
+  ADD CONSTRAINT detalhes_parceiro_centro_check CHECK (
+    (centro_lat IS NULL AND centro_lng IS NULL)
+    OR (
+      centro_lat BETWEEN -90 AND 90
+      AND centro_lng BETWEEN -180 AND 180
+    )
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS parceiro_materiais (
+  parceiro_id UUID NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  material_id UUID NOT NULL
+    REFERENCES materiais_reciclaveis(id) ON DELETE CASCADE,
+  PRIMARY KEY (parceiro_id, material_id)
+);
+
+CREATE TABLE IF NOT EXISTS ofertas_coleta (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  anunciante_id UUID NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  endereco_id UUID NOT NULL REFERENCES enderecos(id) ON DELETE RESTRICT,
+  descricao TEXT NOT NULL,
+  quantidade_estimada VARCHAR(100) NOT NULL,
+  observacoes VARCHAR(500),
+  janela_inicio TIMESTAMPTZ NOT NULL,
+  janela_fim TIMESTAMPTZ NOT NULL,
+  status VARCHAR(12) NOT NULL DEFAULT 'ABERTA',
+  aceite_termos_em TIMESTAMPTZ NOT NULL,
+  aceite_ip VARCHAR(64),
+  versao_termos VARCHAR(10) NOT NULL,
+  assinatura_path VARCHAR(500),
+  cancelada_em TIMESTAMPTZ,
+  criada_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT ofertas_coleta_status_check CHECK (
+    status IN ('ABERTA', 'AGENDADA', 'CONCLUIDA', 'CANCELADA', 'EXPIRADA')
+  ),
+  CONSTRAINT ofertas_coleta_janela_check CHECK (janela_fim > janela_inicio)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ofertas_coleta_status
+ON ofertas_coleta(status, janela_fim);
+
+CREATE INDEX IF NOT EXISTS idx_ofertas_coleta_anunciante
+ON ofertas_coleta(anunciante_id);
+
+CREATE TABLE IF NOT EXISTS oferta_materiais (
+  oferta_id UUID NOT NULL REFERENCES ofertas_coleta(id) ON DELETE CASCADE,
+  material_id UUID NOT NULL
+    REFERENCES materiais_reciclaveis(id) ON DELETE RESTRICT,
+  PRIMARY KEY (oferta_id, material_id)
+);
+
+ALTER TABLE coletas
+ADD COLUMN IF NOT EXISTS oferta_id UUID REFERENCES ofertas_coleta(id),
+ADD COLUMN IF NOT EXISTS agendada_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ADD COLUMN IF NOT EXISTS cancelavel_ate TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS observacoes VARCHAR(500),
+ADD COLUMN IF NOT EXISTS codigo VARCHAR(24),
+ADD COLUMN IF NOT EXISTS documento_hash CHAR(64),
+ADD COLUMN IF NOT EXISTS documento_path VARCHAR(500),
+ADD COLUMN IF NOT EXISTS documento_versao VARCHAR(10),
+ADD COLUMN IF NOT EXISTS assinatura_gerador_path VARCHAR(500),
+ADD COLUMN IF NOT EXISTS assinatura_parceiro_path VARCHAR(500),
+ADD COLUMN IF NOT EXISTS cancelada_em TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS cancelada_por UUID
+  REFERENCES usuarios(id) ON DELETE SET NULL,
+ADD COLUMN IF NOT EXISTS cancelamento_motivo VARCHAR(300),
+ADD COLUMN IF NOT EXISTS concluida_em TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS peso_real_kg NUMERIC(10, 2),
+ADD COLUMN IF NOT EXISTS lembrete_enviado_em TIMESTAMPTZ;
+
+ALTER TABLE coletas
+ALTER COLUMN data_agendada TYPE TIMESTAMPTZ
+USING data_agendada AT TIME ZONE 'UTC';
+
+ALTER TABLE coletas ALTER COLUMN status SET DEFAULT 'AGENDADA';
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_coletas_oferta_ativa
+ON coletas(oferta_id) WHERE status IN ('AGENDADA', 'CONCLUIDA');
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_coletas_codigo
+ON coletas(codigo) WHERE codigo IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_coletas_parceiro_status
+ON coletas(parceiro_id, status);
+
+ALTER TABLE conversas
+ADD COLUMN IF NOT EXISTS coleta_id UUID REFERENCES coletas(id)
+  ON DELETE CASCADE,
+ADD COLUMN IF NOT EXISTS parceiro_id UUID REFERENCES usuarios(id)
+  ON DELETE CASCADE;
+
+ALTER TABLE conversas DROP CONSTRAINT IF EXISTS conversas_tipo_check;
+
+ALTER TABLE conversas ADD CONSTRAINT conversas_tipo_check
+CHECK (tipo IN ('PEDIDO', 'SUPORTE_CACAMBEIRO', 'CHAMADO', 'COLETA'));
+
+ALTER TABLE conversas DROP CONSTRAINT IF EXISTS conversas_partes_check;
+
+ALTER TABLE conversas ADD CONSTRAINT conversas_partes_check CHECK (
+  (tipo = 'PEDIDO'
+    AND aluguel_id IS NOT NULL
+    AND consumidor_id IS NOT NULL
+    AND cacambeiro_id IS NOT NULL)
+  OR (tipo = 'SUPORTE_CACAMBEIRO'
+    AND cacambeiro_id IS NOT NULL
+    AND consumidor_id IS NULL
+    AND aluguel_id IS NULL)
+  OR (tipo = 'CHAMADO'
+    AND consumidor_id IS NOT NULL
+    AND cacambeiro_id IS NULL
+    AND assunto IS NOT NULL)
+  OR (tipo = 'COLETA'
+    AND coleta_id IS NOT NULL
+    AND parceiro_id IS NOT NULL
+    AND aluguel_id IS NULL
+    AND ((consumidor_id IS NOT NULL) <> (cacambeiro_id IS NOT NULL)))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_conversas_coleta
+ON conversas(coleta_id) WHERE tipo = 'COLETA';
+
+CREATE INDEX IF NOT EXISTS idx_conversas_parceiro
+ON conversas(parceiro_id);
+
+ALTER TABLE mensagens DROP CONSTRAINT IF EXISTS mensagens_lado_check;
+
+ALTER TABLE mensagens ADD CONSTRAINT mensagens_lado_check
+CHECK (lado IN ('CLIENTE', 'CACAMBEIRO', 'ADMIN', 'PARCEIRO'));
+-- Logs de erros e pontos de falha da API e do app. Veja src/scripts/logsMigration.js.
+CREATE TABLE IF NOT EXISTS logs_erros (
+  id BIGSERIAL PRIMARY KEY,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  origem VARCHAR(10) NOT NULL,
+  nivel VARCHAR(8) NOT NULL,
+  codigo VARCHAR(80),
+  mensagem TEXT NOT NULL,
+  metodo VARCHAR(10),
+  rota VARCHAR(300),
+  status_http SMALLINT,
+  duracao_ms INTEGER,
+  usuario_id UUID,
+  perfil VARCHAR(20),
+  ip VARCHAR(64),
+  user_agent VARCHAR(300),
+  tela VARCHAR(120),
+  app_versao VARCHAR(40),
+  plataforma VARCHAR(40),
+  detalhes JSONB,
+  CONSTRAINT logs_erros_origem_check CHECK (origem IN ('API', 'APP')),
+  CONSTRAINT logs_erros_nivel_check CHECK (nivel IN ('ERRO', 'AVISO', 'INFO'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_logs_erros_criado_em ON logs_erros (criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_logs_erros_origem_nivel ON logs_erros (origem, nivel, criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_logs_erros_codigo ON logs_erros (codigo, criado_em DESC);

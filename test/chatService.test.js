@@ -490,3 +490,82 @@ describe("denunciar", () => {
     expect(enviarEmail.mock.calls[0][0].texto).toContain("Linguagem ofensiva");
   });
 });
+
+describe("conversa da coleta (reciclagem)", () => {
+  const PARCEIRO = "66666666-6666-4666-8666-666666666666";
+  const parceiro = { id: PARCEIRO, perfil: "PARCEIRO" };
+
+  const coleta = linhaDaConversa({
+    tipo: "COLETA",
+    aluguel_id: null,
+    cacambeiro_id: null,
+    parceiro_id: PARCEIRO,
+    coleta_id: "77777777-7777-4777-8777-777777777777",
+    coleta_codigo: "COL-REC-ABCD1234",
+    parceiro_nome: "Recicla Verde",
+  });
+
+  it("participam quem entrega e o parceiro; o admin só observa", () => {
+    expect(chat.acessoA(coleta, maria)).toEqual({
+      lado: "CLIENTE",
+      observador: false,
+    });
+    expect(chat.acessoA(coleta, parceiro)).toEqual({
+      lado: "PARCEIRO",
+      observador: false,
+    });
+    expect(chat.acessoA(coleta, admin)).toEqual({
+      lado: null,
+      observador: true,
+    });
+    expect(
+      chat.acessoA(coleta, { id: "outro", perfil: "PARCEIRO" }),
+    ).toBeNull();
+    expect(chat.acessoA(coleta, alfa)).toBeNull();
+  });
+
+  it("parceiro não participa de conversas de outros tipos", () => {
+    expect(
+      chat.acessoA(linhaDaConversa({ parceiro_id: PARCEIRO }), parceiro),
+    ).toBeNull();
+  });
+
+  it("cada lado vê o nome certo", () => {
+    expect(chat.contatoVisto(coleta, "CONSUMIDOR")).toEqual({
+      nome: "Recicla Verde",
+      detalhe: "Coleta COL-REC-ABCD1234",
+    });
+    expect(chat.contatoVisto(coleta, "PARCEIRO").nome).toBe("Maria Cliente");
+    expect(chat.contatoVisto(coleta, "ADMIN").nome).toBe(
+      "Maria Cliente × Recicla Verde",
+    );
+  });
+
+  it("para onde vai cada mensagem", () => {
+    expect(chat.ladoDestino("COLETA", "CLIENTE")).toBe("PARCEIRO");
+    expect(chat.ladoDestino("COLETA", "CACAMBEIRO")).toBe("PARCEIRO");
+    expect(
+      chat.ladoDestino("COLETA", "PARCEIRO", { consumidor_id: "x" }),
+    ).toBe("CLIENTE");
+    expect(
+      chat.ladoDestino("COLETA", "PARCEIRO", { cacambeiro_id: "x" }),
+    ).toBe("CACAMBEIRO");
+  });
+
+  it("depois do fim da coleta, 7 dias de conversa e então só leitura", () => {
+    const acesso = { lado: "PARCEIRO", observador: false };
+    const encerrada = {
+      ...coleta,
+      encerrada_efetiva: new Date("2026-11-01T12:00:00Z"),
+    };
+
+    expect(
+      chat.motivoBloqueio(encerrada, acesso, new Date("2026-11-08T11:00:00Z")),
+    ).toBeNull();
+    expect(
+      chat.motivoBloqueio(encerrada, acesso, new Date("2026-11-08T13:00:00Z"))
+        .codigo,
+    ).toBe("CONVERSATION_CLOSED");
+    expect(chat.motivoBloqueio(coleta, acesso)).toBeNull();
+  });
+});

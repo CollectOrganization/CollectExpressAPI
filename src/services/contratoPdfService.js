@@ -532,5 +532,15 @@ module.exports = {
   formatarDocumento,
   formatarMoeda,
   formatarData,
+  formatarDataHora,
   dataDeTermino,
+  // Usados também pelo documento de coleta de recicláveis.
+  carregarLogo,
+  titulo,
+  linhaCampo,
+  MARGEM,
+  LARGURA_UTIL,
+  VERDE,
+  CINZA,
+  LINHA,
 };

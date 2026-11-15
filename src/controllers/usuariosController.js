@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 
 const sql = require("../config/db");
+const { avisarAprovacaoDoParceiro } = require("../services/reciclagemService");
 const {
   sendSuccess,
   sendError,
@@ -630,6 +631,27 @@ const usuariosController = {
           detalhes.length > 0 ? detalhes[0] : null;
       }
 
+      if (usuario.tipo_perfil === "PARCEIRO") {
+        const detalhes = await sql`
+          SELECT
+            d.responsavel_nome,
+            d.endereco_coleta,
+            d.capacidade_diaria_kg,
+            d.raio_atuacao_km,
+            ARRAY(
+              SELECT m.nome
+              FROM parceiro_materiais pm
+              INNER JOIN materiais_reciclaveis m ON m.id = pm.material_id
+              WHERE pm.parceiro_id = d.usuario_id
+              ORDER BY m.nome
+            ) AS materiais
+          FROM detalhes_parceiro d
+          WHERE d.usuario_id = ${id}
+        `;
+
+        usuario.detalhes_parceiro = detalhes.length > 0 ? detalhes[0] : null;
+      }
+
       return sendSuccess(
         res,
         usuario,
@@ -992,6 +1014,13 @@ const usuariosController = {
       * aprovação ou suspensão. Ex.: notificationService.sendAccountStatusEmail().
       * Manter como fire-and-forget para não bloquear a resposta.
       */
+
+      // Parceiro de reciclagem aprovado: avisa por e-mail, sem bloquear.
+      if (status === "ATIVO" && resultado[0].tipo_perfil === "PARCEIRO") {
+        avisarAprovacaoDoParceiro(resultado[0]).catch((erro) =>
+          console.error("Erro ao avisar a aprovação do parceiro:", erro.message),
+        );
+      }
 
       return res.status(200).json({
         success: true,

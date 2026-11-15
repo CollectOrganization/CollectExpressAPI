@@ -9,11 +9,23 @@ const schemas = require("../validators/requestSchemas");
 const avaliacoesController = require("../controllers/avaliacoesController");
 const assinaturasController = require("../controllers/assinaturasController");
 const areaAtendimentoController = require("../controllers/areaAtendimentoController");
+const cacambeiroPerfilController = require("../controllers/cacambeiroPerfilController");
 const { uploadJson } = require("../middlewares/uploadBody");
 
 // Rotas autenticadas do caçambeiro (antes de /:id para evitar conflito)
 router.get("/dashboard", authMiddleware, roleMiddleware(['CACAMBEIRO']), cacambeirosController.dashboard);
 router.get("/financeiro", authMiddleware, roleMiddleware(['CACAMBEIRO']), cacambeirosController.financeiro);
+
+// Horário de funcionamento e taxa de entrega do próprio fornecedor.
+router.put(
+  "/me",
+  authMiddleware,
+  roleMiddleware(["CACAMBEIRO"]),
+  validationMiddleware(schemas.updateSupplierDetails, "body", {
+    atLeastOne: ["horario_inicio", "horario_fim", "taxa_entrega"],
+  }),
+  cacambeiroPerfilController.atualizar,
+);
 
 // Área de atendimento (cerca virtual circular) e pendências de cadastro.
 router.get(

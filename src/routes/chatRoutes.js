@@ -74,6 +74,13 @@ router.post(
 );
 
 router.post(
+  "/coletas/:id/conversa",
+  roleMiddleware(["CONSUMIDOR", "CACAMBEIRO", "PARCEIRO", "ADMIN"]),
+  uuid,
+  chatController.conversaDaColeta,
+);
+
+router.post(
   "/chamados",
   roleMiddleware(["CONSUMIDOR"]),
   validationMiddleware(schemas.chatOpenTicket),

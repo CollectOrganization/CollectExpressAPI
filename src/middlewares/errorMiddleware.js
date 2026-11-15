@@ -9,7 +9,16 @@ function notFoundMiddleware(req, res) {
 }
 
 function errorMiddleware(error, req, res, next) {
-  console.error(error);
+  // Erro de regra de negócio (4xx) é esperado e já fica em logs_erros
+  // pela resposta; só falhas inesperadas vão para o console.
+  const esperado =
+    (error instanceof ApiError && error.statusCode < 500) ||
+    error.type === "entity.too.large" ||
+    error.type === "entity.parse.failed";
+
+  if (!esperado) {
+    console.error(error);
+  }
 
   if (error instanceof ApiError) {
     return res.status(error.statusCode).json({
@@ -25,6 +34,15 @@ function errorMiddleware(error, req, res, next) {
       success: false,
       message: "O corpo da requisição excede o limite permitido.",
       code: "PAYLOAD_TOO_LARGE",
+    });
+  }
+
+  // JSON malformado no corpo: erro de quem chamou, não do servidor.
+  if (error.type === "entity.parse.failed") {
+    return res.status(400).json({
+      success: false,
+      message: "O corpo da requisição não é um JSON válido.",
+      code: "INVALID_JSON",
     });
   }
 

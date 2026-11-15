@@ -6,6 +6,7 @@
  * - public/cacambas     fotos das caçambas, servidas em /uploads/...
  * - private/assinaturas assinaturas (empresa e consumidor)
  * - private/contratos   PDFs dos contratos
+ * - private/coletas     PDFs dos documentos de coleta de recicláveis
  *
  * Nomes de arquivo são sempre gerados pelo servidor. O banco guarda
  * a "chave" relativa (ex.: private/contratos/<id>.pdf) ou, para
@@ -20,6 +21,7 @@ const PASTAS_PERMITIDAS = new Set([
   "public/cacambas",
   "private/assinaturas",
   "private/contratos",
+  "private/coletas",
 ]);
 
 const EXTENSOES_PERMITIDAS = new Set([

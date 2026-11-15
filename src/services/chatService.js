@@ -6,6 +6,8 @@
  * - SUPORTE_CACAMBEIRO  caçambeiro x equipe (admins), uma por caçambeiro.
  * - CHAMADO             cliente x equipe (admins), aberto pelo cliente e
  *                       fechado por um admin. Um aberto por vez.
+ * - COLETA              quem entrega material reciclável (cliente ou
+ *                       caçambeiro) x parceiro de reciclagem, uma por coleta.
  *
  * O lado ADMIN é compartilhado: qualquer admin lê e responde, e a mensagem
  * conta como lida para todos quando um deles abre a conversa. Nas conversas
@@ -23,18 +25,21 @@ const TIPOS = Object.freeze({
   PEDIDO: "PEDIDO",
   SUPORTE: "SUPORTE_CACAMBEIRO",
   CHAMADO: "CHAMADO",
+  COLETA: "COLETA",
 });
 
 const LADOS = Object.freeze({
   CLIENTE: "CLIENTE",
   CACAMBEIRO: "CACAMBEIRO",
   ADMIN: "ADMIN",
+  PARCEIRO: "PARCEIRO",
 });
 
 const LADO_POR_PERFIL = Object.freeze({
   CONSUMIDOR: LADOS.CLIENTE,
   CACAMBEIRO: LADOS.CACAMBEIRO,
   ADMIN: LADOS.ADMIN,
+  PARCEIRO: LADOS.PARCEIRO,
 });
 
 const NOME_SUPORTE = "Suporte CollectExpress";
@@ -60,9 +65,17 @@ function usuarioDaRequisicao(req) {
  */
 function acessoA(conversa, usuario) {
   if (usuario.perfil === "ADMIN") {
-    return conversa.tipo === TIPOS.PEDIDO
+    return conversa.tipo === TIPOS.PEDIDO || conversa.tipo === TIPOS.COLETA
       ? { lado: null, observador: true }
       : { lado: LADOS.ADMIN, observador: false };
+  }
+
+  if (
+    usuario.perfil === "PARCEIRO" &&
+    conversa.tipo === TIPOS.COLETA &&
+    conversa.parceiro_id === usuario.id
+  ) {
+    return { lado: LADOS.PARCEIRO, observador: false };
   }
 
   if (
@@ -100,7 +113,10 @@ function motivoBloqueio(conversa, acesso, agora = new Date()) {
     };
   }
 
-  if (conversa.tipo === TIPOS.PEDIDO && conversa.encerrada_efetiva) {
+  if (
+    (conversa.tipo === TIPOS.PEDIDO || conversa.tipo === TIPOS.COLETA) &&
+    conversa.encerrada_efetiva
+  ) {
     const limite = new Date(conversa.encerrada_efetiva);
     limite.setDate(limite.getDate() + DIAS_CONVERSA_APOS_PEDIDO);
 
@@ -110,7 +126,7 @@ function motivoBloqueio(conversa, acesso, agora = new Date()) {
         codigo: "CONVERSATION_CLOSED",
         mensagem:
           `A conversa ficou só para leitura ${DIAS_CONVERSA_APOS_PEDIDO} ` +
-          "dias depois do fim do pedido.",
+          "dias depois do fim do pedido ou da coleta.",
       };
     }
   }
@@ -120,6 +136,26 @@ function motivoBloqueio(conversa, acesso, agora = new Date()) {
 
 /** Nome e detalhe que o usuário vê no topo da conversa e na lista. */
 function contatoVisto(conversa, perfil) {
+  if (conversa.tipo === TIPOS.COLETA) {
+    const codigoColeta = conversa.coleta_codigo
+      ? `Coleta ${conversa.coleta_codigo}`
+      : null;
+    const gerador = conversa.consumidor_nome ?? conversa.cacambeiro_nome;
+
+    if (perfil === "PARCEIRO") {
+      return { nome: gerador, detalhe: codigoColeta };
+    }
+
+    if (perfil === "ADMIN") {
+      return {
+        nome: `${gerador} × ${conversa.parceiro_nome}`,
+        detalhe: codigoColeta,
+      };
+    }
+
+    return { nome: conversa.parceiro_nome, detalhe: codigoColeta };
+  }
+
   const codigo = conversa.aluguel_id
     ? `Pedido ${codigoDoPedido(conversa.aluguel_id)}`
     : null;
@@ -162,6 +198,8 @@ function serializarConversa(linha, usuario) {
     assunto: linha.assunto,
     aluguel_id: linha.aluguel_id,
     pedido_codigo: linha.aluguel_id ? codigoDoPedido(linha.aluguel_id) : null,
+    coleta_id: linha.coleta_id ?? null,
+    coleta_codigo: linha.coleta_codigo ?? null,
     contato_nome: contato.nome,
     contato_detalhe: contato.detalhe,
     ultima_mensagem: linha.ultima_texto
@@ -210,11 +248,16 @@ function selecionarConversas(usuario, filtro, ordem = sql``) {
   const lado = LADO_POR_PERFIL[usuario.perfil];
   // Admin só recebe alerta das conversas em que responde.
   const naoLidasDoAdmin =
-    usuario.perfil === "ADMIN" ? sql`AND c.tipo <> 'PEDIDO'` : sql``;
+    usuario.perfil === "ADMIN"
+      ? sql`AND c.tipo NOT IN ('PEDIDO', 'COLETA')`
+      : sql``;
 
   return sql`
     SELECT
       c.id, c.tipo, c.aluguel_id, c.consumidor_id, c.cacambeiro_id,
+      c.coleta_id, c.parceiro_id,
+      col.codigo AS coleta_codigo,
+      par.nome_completo AS parceiro_nome,
       c.assunto, c.status, c.fechada_em, c.ultima_mensagem_em,
       c.denunciada_em, c.criada_em,
       COALESCE(
@@ -241,6 +284,8 @@ function selecionarConversas(usuario, filtro, ordem = sql``) {
     LEFT JOIN alugueis a ON a.id = c.aluguel_id
     LEFT JOIN usuarios cons ON cons.id = c.consumidor_id
     LEFT JOIN usuarios cac ON cac.id = c.cacambeiro_id
+    LEFT JOIN usuarios par ON par.id = c.parceiro_id
+    LEFT JOIN coletas col ON col.id = c.coleta_id
     LEFT JOIN LATERAL (
       SELECT texto, lado, criada_em
       FROM mensagens
@@ -260,6 +305,10 @@ function escopoDoUsuario(usuario) {
 
   if (usuario.perfil === "CACAMBEIRO") {
     return sql`c.cacambeiro_id = ${usuario.id}`;
+  }
+
+  if (usuario.perfil === "PARCEIRO") {
+    return sql`c.parceiro_id = ${usuario.id}`;
   }
 
   return sql`TRUE`;
@@ -388,7 +437,9 @@ async function listarConversas(usuario, filtros = {}) {
 async function contarNaoLidas(usuario) {
   const lado = LADO_POR_PERFIL[usuario.perfil];
   const soDoSuporte =
-    usuario.perfil === "ADMIN" ? sql`AND c.tipo <> 'PEDIDO'` : sql``;
+    usuario.perfil === "ADMIN"
+      ? sql`AND c.tipo NOT IN ('PEDIDO', 'COLETA')`
+      : sql``;
 
   const linhas = await sql`
     SELECT
@@ -463,6 +514,57 @@ async function resumoDoPedido(aluguelId) {
   };
 }
 
+/** Dados da coleta para a tela de detalhes da conversa (sem telefone). */
+async function resumoDaColeta(coletaId) {
+  const linhas = await sql`
+    SELECT
+      c.id, c.codigo, c.status, c.data_agendada, c.cancelavel_ate,
+      o.descricao, o.quantidade_estimada,
+      e.cep, e.logradouro, e.numero, e.bairro, e.cidade_estado,
+      g.nome_completo AS gerador_nome,
+      p.nome_completo AS parceiro_nome,
+      ARRAY(
+        SELECT m.nome
+        FROM oferta_materiais om
+        INNER JOIN materiais_reciclaveis m ON m.id = om.material_id
+        WHERE om.oferta_id = c.oferta_id
+        ORDER BY m.nome
+      ) AS materiais
+    FROM coletas c
+    INNER JOIN ofertas_coleta o ON o.id = c.oferta_id
+    INNER JOIN enderecos e ON e.id = c.endereco_id
+    INNER JOIN usuarios g ON g.id = c.consumidor_id
+    INNER JOIN usuarios p ON p.id = c.parceiro_id
+    WHERE c.id = ${coletaId}
+  `;
+
+  const linha = linhas[0];
+
+  if (!linha) {
+    return null;
+  }
+
+  return {
+    id: linha.id,
+    codigo: linha.codigo,
+    status: linha.status,
+    data_agendada: linha.data_agendada,
+    cancelavel_ate: linha.cancelavel_ate,
+    materiais: linha.materiais,
+    descricao: linha.descricao,
+    quantidade_estimada: linha.quantidade_estimada,
+    gerador_nome: linha.gerador_nome,
+    parceiro_nome: linha.parceiro_nome,
+    endereco: {
+      cep: linha.cep,
+      logradouro: linha.logradouro,
+      numero: linha.numero,
+      bairro: linha.bairro,
+      cidade_estado: linha.cidade_estado,
+    },
+  };
+}
+
 async function detalheDaConversa(usuario, conversaId) {
   const { linha, acesso } = await carregarConversa(usuario, conversaId);
 
@@ -476,6 +578,7 @@ async function detalheDaConversa(usuario, conversaId) {
   return {
     ...serializarConversa(linha, usuario),
     pedido: linha.aluguel_id ? await resumoDoPedido(linha.aluguel_id) : null,
+    coleta: linha.coleta_id ? await resumoDaColeta(linha.coleta_id) : null,
   };
 }
 
@@ -662,6 +765,59 @@ async function conversaDoPedido(usuario, aluguelId) {
   }
 
   const conversaId = await garantirConversaDoPedido(aluguelId);
+
+  return detalheDaConversa(usuario, conversaId);
+}
+
+/* ------------------------------------------------------------------ */
+/* Coletas de reciclagem                                               */
+/* ------------------------------------------------------------------ */
+
+/** Cria (se faltar) a conversa entre quem entrega o material e o parceiro. */
+async function garantirConversaDaColeta(coletaId) {
+  await sql`
+    INSERT INTO conversas (
+      tipo, coleta_id, parceiro_id, consumidor_id, cacambeiro_id, encerrada_em
+    )
+    SELECT
+      'COLETA', c.id, c.parceiro_id,
+      CASE WHEN g.tipo_perfil = 'CONSUMIDOR' THEN g.id END,
+      CASE WHEN g.tipo_perfil = 'CACAMBEIRO' THEN g.id END,
+      CASE WHEN c.status <> 'AGENDADA'
+        THEN COALESCE(c.concluida_em, c.cancelada_em, NOW())
+      END
+    FROM coletas c
+    INNER JOIN usuarios g ON g.id = c.consumidor_id
+    WHERE c.id = ${coletaId}
+    ON CONFLICT (coleta_id) WHERE tipo = 'COLETA' DO NOTHING
+  `;
+
+  const linhas = await sql`
+    SELECT id FROM conversas
+    WHERE tipo = 'COLETA' AND coleta_id = ${coletaId}
+  `;
+
+  return linhas[0]?.id ?? null;
+}
+
+/** Conversa da coleta para quem faz parte dela (ou admin, só leitura). */
+async function conversaDaColeta(usuario, coletaId) {
+  const coletas = await sql`
+    SELECT consumidor_id, parceiro_id FROM coletas WHERE id = ${coletaId}
+  `;
+
+  const coleta = coletas[0];
+  const permitido =
+    coleta &&
+    (usuario.perfil === "ADMIN" ||
+      coleta.consumidor_id === usuario.id ||
+      coleta.parceiro_id === usuario.id);
+
+  if (!permitido) {
+    throw new ApiError(404, "Coleta não encontrada.", "COLLECTION_NOT_FOUND");
+  }
+
+  const conversaId = await garantirConversaDaColeta(coletaId);
 
   return detalheDaConversa(usuario, conversaId);
 }
@@ -912,7 +1068,15 @@ async function resolverDenuncia(usuario, conversaId) {
 /* ------------------------------------------------------------------ */
 
 /** Para quem vai a mensagem escrita por `ladoRemetente`. */
-function ladoDestino(tipo, ladoRemetente) {
+function ladoDestino(tipo, ladoRemetente, conversa) {
+  if (tipo === TIPOS.COLETA) {
+    if (ladoRemetente !== LADOS.PARCEIRO) {
+      return LADOS.PARCEIRO;
+    }
+
+    return conversa?.consumidor_id ? LADOS.CLIENTE : LADOS.CACAMBEIRO;
+  }
+
   if (tipo === TIPOS.PEDIDO) {
     return ladoRemetente === LADOS.CLIENTE ? LADOS.CACAMBEIRO : LADOS.CLIENTE;
   }
@@ -943,6 +1107,18 @@ function textoDoAviso(grupo, ladoRecebe) {
     };
   }
 
+  if (grupo.tipo === TIPOS.COLETA) {
+    const quem =
+      ladoRecebe === LADOS.PARCEIRO
+        ? (grupo.consumidor_nome ?? grupo.cacambeiro_nome)
+        : grupo.parceiro_nome;
+
+    return {
+      rotulo: `Coleta ${grupo.coleta_codigo} · ${quem}`,
+      resumo: `${quantidade} ${mensagens}`,
+    };
+  }
+
   if (grupo.tipo === TIPOS.SUPORTE) {
     return {
       rotulo:
@@ -965,6 +1141,18 @@ function textoDoAviso(grupo, ladoRecebe) {
 async function destinatariosDoGrupo(grupo, ladoRecebe) {
   if (ladoRecebe === LADOS.ADMIN) {
     return adminsAtivos();
+  }
+
+  if (ladoRecebe === LADOS.PARCEIRO) {
+    return grupo.parceiro_email && grupo.parceiro_status === "ATIVO"
+      ? [
+          {
+            id: grupo.parceiro_id,
+            nome_completo: grupo.parceiro_nome,
+            email: grupo.parceiro_email,
+          },
+        ]
+      : [];
   }
 
   const quem =
@@ -1002,7 +1190,11 @@ async function avisarMensagensNaoLidas(horas = HORAS_ATE_AVISO) {
       m.lado,
       COUNT(*)::int AS total,
       c.tipo, c.aluguel_id, c.assunto, c.status,
-      c.consumidor_id, c.cacambeiro_id,
+      c.consumidor_id, c.cacambeiro_id, c.parceiro_id,
+      col.codigo AS coleta_codigo,
+      par.nome_completo AS parceiro_nome,
+      par.email AS parceiro_email,
+      par.status AS parceiro_status,
       cons.nome_completo AS consumidor_nome,
       cons.email AS consumidor_email,
       cons.status AS consumidor_status,
@@ -1013,10 +1205,13 @@ async function avisarMensagensNaoLidas(horas = HORAS_ATE_AVISO) {
     INNER JOIN conversas c ON c.id = m.conversa_id
     LEFT JOIN usuarios cons ON cons.id = c.consumidor_id
     LEFT JOIN usuarios cac ON cac.id = c.cacambeiro_id
+    LEFT JOIN usuarios par ON par.id = c.parceiro_id
+    LEFT JOIN coletas col ON col.id = c.coleta_id
     WHERE m.lida_em IS NULL
     GROUP BY
       m.conversa_id, m.lado, c.tipo, c.aluguel_id, c.assunto, c.status,
-      c.consumidor_id, c.cacambeiro_id,
+      c.consumidor_id, c.cacambeiro_id, c.parceiro_id,
+      col.codigo, par.nome_completo, par.email, par.status,
       cons.nome_completo, cons.email, cons.status,
       cac.nome_completo, cac.email, cac.status
     HAVING MIN(m.criada_em) <= NOW() - make_interval(hours => ${horas})
@@ -1032,7 +1227,7 @@ async function avisarMensagensNaoLidas(horas = HORAS_ATE_AVISO) {
   const semDestino = [];
 
   for (const grupo of grupos) {
-    const ladoRecebe = ladoDestino(grupo.tipo, grupo.lado);
+    const ladoRecebe = ladoDestino(grupo.tipo, grupo.lado, grupo);
 
     // Ninguém responde chamado fechado: não há o que avisar à equipe.
     if (
@@ -1164,6 +1359,8 @@ module.exports = {
   garantirConversaDoPedido,
   registrarFimDoPedido,
   conversaDoPedido,
+  garantirConversaDaColeta,
+  conversaDaColeta,
   abrirChamado,
   fecharChamado,
   denunciar,

@@ -8,6 +8,7 @@ const {
 const crypto = require("crypto");
 
 const ApiError = require("../utils/apiError");
+const { diasAteADataNoBrasil } = require("../utils/dataBrasil");
 const {
   decodificarAssinaturaConsumidor,
 } = require("../utils/imageUpload");
@@ -212,23 +213,9 @@ const alugueisController = {
         );
       }
 
-      const [year, month, day] = dataInicioString
-        .split("-")
-        .map(Number);
-
-      const dataInicio = new Date(
-        year,
-        month - 1,
-        day,
-      );
-
-      const hoje = new Date();
-      hoje.setHours(0, 0, 0, 0);
-
-      const diferencaDias = Math.round(
-        (dataInicio.getTime() - hoje.getTime()) /
-          (1000 * 60 * 60 * 24),
-      );
+      // "Hoje" é o dia de Brasília: o servidor roda em UTC e, depois
+      // das 21h, já estaria no dia seguinte.
+      const diferencaDias = diasAteADataNoBrasil(dataInicioString);
 
       if (
         diferencaDias < 1 ||

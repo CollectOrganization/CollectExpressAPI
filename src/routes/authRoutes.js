@@ -9,6 +9,9 @@ const validationMiddleware = require(
 const validateSupplierRegistration = require(
   "../middlewares/validateSupplierRegistration",
 );
+const validatePartnerRegistration = require(
+  "../middlewares/validatePartnerRegistration",
+);
 
 const {
   rateLimitMiddleware,
@@ -342,6 +345,7 @@ router.post(
   registerLimiter,
   validationMiddleware(schemas.register),
   validateSupplierRegistration,
+  validatePartnerRegistration,
   authController.register,
 );
 

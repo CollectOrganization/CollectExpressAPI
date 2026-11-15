@@ -122,6 +122,29 @@ async function authMiddleware(req, res, next) {
 
     return next();
   } catch (error) {
+    /*
+     * Só problema do token é 401. Falha do banco (Neon acordando,
+     * conexão perdida) não é culpa da sessão: responder 401 fazia o app
+     * tentar renovar o token e, falhando, deslogar a pessoa à toa.
+     * Aqui vira 503, que o app trata como falha passageira.
+     */
+    const erroDeToken = [
+      "JsonWebTokenError",
+      "TokenExpiredError",
+      "NotBeforeError",
+    ].includes(error?.name);
+
+    if (!erroDeToken) {
+      console.error("Falha ao validar a sessão:", error);
+
+      return res.status(503).json({
+        success: false,
+        message:
+          "Não foi possível validar sua sessão agora. Tente novamente em instantes.",
+        code: "AUTH_UNAVAILABLE",
+      });
+    }
+
     return res.status(401).json({
       success: false,
       message: "Token inválido ou expirado.",

@@ -914,3 +914,93 @@ Mensagem sem leitura há mais de 8 horas gera um e-mail para o destinatário (pa
 A API confere sozinha a cada 15 minutos enquanto está acordada. No Render gratuito, que hiberna, agende um cron
 (ex.: cron-job.org) a cada 15 minutos em `POST /api/internal/jobs/chat` com o header `x-jobs-secret`, como já é feito
 para as extensões. Denúncias avisam os admins na hora.
+## Parceiros de reciclagem
+
+Quem tem material reciclável (cliente ou caçambeiro) faz uma **sinalização**; um **parceiro de reciclagem** aprovado
+escolhe uma e **agenda a coleta**. No agendamento a API gera o *Termo de coleta de material reciclável* em PDF, com três
+assinaturas (Collect Express, quem entrega e o parceiro) e um código de autenticação, e avisa as duas partes por e-mail.
+
+### Antes de subir esta versão
+
+```bash
+npm run migrate:reciclagem   # perfil PARCEIRO, materiais_reciclaveis (com seed), ofertas_coleta, coletas e chat de coleta
+```
+
+A migração é aditiva e pode ser repetida. Variável nova: `DOCUMENT_SIGNING_SECRET` (segredo do código de autenticação
+do termo; sem ela vale o `JWT_SECRET`, mas trocar o segredo invalida a verificação dos termos já emitidos).
+
+### Regras
+
+- A janela da sinalização tem no mínimo 2 horas, termina daqui a mais de 25 horas e no máximo em 60 dias.
+- O parceiro só agenda com **24 horas ou mais de antecedência** e dentro da janela. Assim quem entrega tem 24 horas
+  para desistir (`cancelavel_ate`).
+- Quem entrega cancela até 24 horas depois do agendamento. Ao cancelar, a sinalização volta para a vitrine (ou expira, se
+  já não dá mais tempo); com `encerrar_sinalizacao: true` ela é encerrada.
+- O parceiro cancela antes da retirada. Concluir só a partir do horário marcado; o peso real é opcional.
+- Cliente assina na tela (PNG). Caçambeiro usa a assinatura da empresa, e sem ela não consegue sinalizar
+  (`SIGNATURE_REQUIRED`). O parceiro também precisa da assinatura cadastrada para agendar.
+- O endereço completo só aparece para o parceiro depois do agendamento. Telefone e e-mail nunca saem para a outra parte:
+  a conversa é o chat da coleta (tipo `COLETA`, criada no agendamento, só leitura para o admin).
+- Parceiro novo fica `PENDENTE` até um admin aprovar (`PATCH /api/usuarios/:id/status`); a aprovação envia e-mail.
+
+### Cadastro do parceiro
+
+`POST /api/auth/register` com `tipo_perfil: "PARCEIRO"`, `documento` (CNPJ, 14 dígitos), `responsavel_nome`,
+`endereco_coleta`, `materiais_ids` (de 1 a 20) e `capacidade_diaria_kg` (opcional), além dos campos comuns.
+`GET /api/usuarios/:id` (admin) devolve `detalhes_parceiro` com responsável, endereço, capacidade e materiais.
+
+### Rotas
+
+| Rota | Perfil | Descrição |
+|---|---|---|
+| `GET /api/materiais` | público | catálogo de materiais recicláveis |
+| `POST /api/ofertas-coleta` | CONSUMIDOR, CACAMBEIRO | cria a sinalização (`materiais_ids`, `descricao`, `quantidade_estimada`, `endereco_id`, `janela_inicio`, `janela_fim`, `observacoes?`, `aceite_termos`, `assinatura_base64` do cliente) |
+| `GET /api/ofertas-coleta/minhas` | CONSUMIDOR, CACAMBEIRO | minhas sinalizações, com a coleta agendada |
+| `PATCH /api/ofertas-coleta/:id/cancelar` | dono | cancela uma sinalização aberta |
+| `GET /api/ofertas-coleta?materiais=&distancia_km=&de=&ate=&page=` | PARCEIRO | vitrine dentro da área de atuação, sem endereço completo |
+| `GET /api/ofertas-coleta/:id` | PARCEIRO | detalhe da sinalização |
+| `POST /api/coletas` | PARCEIRO | `{ oferta_id, data_agendada, observacoes? }`; gera o termo e envia os e-mails |
+| `GET /api/coletas?status=&page=` | PARCEIRO, quem entrega, ADMIN | lista as coletas de cada perfil |
+| `GET /api/coletas/resumo` | PARCEIRO, quem entrega | totais para o início |
+| `GET /api/coletas/:id` | partes e ADMIN | detalhe |
+| `GET /api/coletas/:id/documento` | partes e ADMIN | termo em PDF |
+| `PATCH /api/coletas/:id/cancelar` | partes e ADMIN | `{ motivo?, encerrar_sinalizacao? }` |
+| `PATCH /api/coletas/:id/concluir` | PARCEIRO | `{ peso_real_kg? }` |
+| `GET /api/coletas/verificar/:codigo?autenticacao=` | público | confere o código de autenticação de um termo (limitada por IP) |
+| `GET/PUT /api/parceiros/me` | PARCEIRO | dados da empresa, materiais e disponibilidade |
+| `GET/PUT /api/parceiros/me/area` | PARCEIRO | área de atuação (centro e raio, como a cerca do caçambeiro) |
+| `GET /api/parceiros/me/pendencias` | PARCEIRO | `AREA_ATUACAO`, `ASSINATURA`, `MATERIAIS` |
+| `GET/PUT/DELETE /api/parceiros/me/assinatura` | PARCEIRO | assinatura da empresa (PNG 3:1) |
+| `POST /api/chat/coletas/:id/conversa` | partes e ADMIN | abre (ou cria) o chat da coleta |
+| `POST /api/internal/jobs/reciclagem` | cron (`x-jobs-secret`) | expira sinalizações vencidas e envia o lembrete 24 horas antes da retirada |
+
+A API roda essa varredura a cada 15 minutos enquanto está acordada. No Render gratuito, agende um cron em
+`POST /api/internal/jobs/reciclagem` com o header `x-jobs-secret`, como já é feito para extensões e chat.
+## Logs de erros (`logs_erros`)
+
+A API e o app Flutter gravam erros e pontos de falha na tabela `logs_erros`, para achar problemas que aparecem "às vezes".
+
+```bash
+npm run migrate:logs                         # cria a tabela (aditiva, pode repetir)
+npm run logs:ver                             # resumo das últimas 24 h
+npm run logs:ver -- --horas 72 --nivel ERRO --origem APP --limite 50
+npm run logs:ver -- --codigo INVALID_START_DATE
+```
+
+O que é registrado:
+
+| Origem | O quê |
+|---|---|
+| `API` | toda resposta 4xx/5xx (código, mensagem, campos inválidos, corpo da requisição sem dados sensíveis); requisições com mais de 4 s (`SLOW_REQUEST`); tudo que vai para `console.error`/`console.warn` (os `catch` dos controllers, falhas de e-mail, PIX, CEP e mapa), com rota e usuário; exceções sem tratamento; variáveis de ambiente ausentes na inicialização (`CONFIG_AUSENTE`) |
+| `APP` | erro mostrado ao usuário (com a tela e a ação), tela que não carregou, queda de rede e timeout (que a API nunca vê), exceção não tratada, overflow de layout e sessão expirada. O app envia para `POST /api/logs/app` (pública, 30 por minuto por IP, sempre responde 202) |
+
+Níveis: `ERRO` (5xx, exceções), `AVISO` (4xx, lentidão, configuração) e `INFO` (401, 404, início do servidor).
+
+Cuidados:
+
+- Senhas, tokens, assinaturas, documentos e telefones viram `[oculto]`; textos longos e arquivos em base64 viram só o tamanho.
+- Repetição igual em menos de 10 s é descartada e há teto de 120 gravações por minuto (um aviso `LOGS_DESCARTADOS` mostra a rajada).
+- Gravar log nunca atrasa nem quebra a requisição. Sem a tabela, a API só avisa no console.
+- Logs com mais de 30 dias são apagados (`LOGS_RETENCAO_DIAS`). `LOGS_DESATIVADOS=true` desliga tudo; nos testes (`NODE_ENV=test`) já vem desligado.
+- O limite geral por IP subiu de 100 para 300 requisições por minuto (`GLOBAL_RATE_LIMIT`): vários testadores na mesma rede dividem o limite e o app consulta o chat de tempos em tempos.
+- `PUT /api/cacambeiros/me` (`horario_inicio`, `horario_fim`, `taxa_entrega`) atualiza a loja do fornecedor; nome e telefone seguem em `PUT /api/usuarios/perfil`.

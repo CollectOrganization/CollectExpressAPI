@@ -1,22 +1,36 @@
 const express = require("express");
-const router = express.Router();
+
 const parceirosController = require("../controllers/parceirosController");
 const authMiddleware = require("../middlewares/authMiddleware");
+const roleMiddleware = require("../middlewares/roleMiddleware");
+const validationMiddleware = require("../middlewares/validationMiddleware");
+const schemas = require("../validators/requestSchemas");
+const { uploadJson } = require("../middlewares/uploadBody");
 
-// --- Rotas públicas ---
-// Rota: GET /api/parceiros
-// Objetivo: Listar parceiros de reciclagem disponíveis
-router.get("/", parceirosController.listar);
+const router = express.Router();
 
-// Rota: GET /api/parceiros/:id
-// Objetivo: Ver detalhes de um parceiro de reciclagem específico
-router.get("/:id", parceirosController.detalhes);
+// Perfil do parceiro de reciclagem (aprovado por um admin).
+router.use(authMiddleware, roleMiddleware(["PARCEIRO"]));
 
-// --- Rotas protegidas (Requerem autenticação) ---
-router.use(authMiddleware);
+router.get("/me", parceirosController.obter);
+router.put("/me", parceirosController.atualizar);
 
-// Rota: POST /api/parceiros/perfil
-// Objetivo: Criar ou atualizar perfil de parceiro para o usuário logado
-router.post("/perfil", parceirosController.salvarPerfil);
+router.get("/me/area", parceirosController.obterArea);
+router.put(
+  "/me/area",
+  validationMiddleware(schemas.updateServiceArea),
+  parceirosController.salvarArea,
+);
+
+router.get("/me/pendencias", parceirosController.pendencias);
+
+router.get("/me/assinatura", parceirosController.obterAssinatura);
+router.put(
+  "/me/assinatura",
+  uploadJson,
+  validationMiddleware(schemas.uploadAssinatura),
+  parceirosController.salvarAssinatura,
+);
+router.delete("/me/assinatura", parceirosController.removerAssinatura);
 
 module.exports = router;
