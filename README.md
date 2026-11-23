@@ -708,8 +708,6 @@ Nunca publique:
 ## Funcionalidades pendentes
 
 - refresh token;
-- persistência dos tokens de recuperação;
-- envio de recuperação de senha por e-mail;
 - upload de imagens;
 - gateway de pagamento;
 - transação atômica no checkout;
@@ -813,6 +811,21 @@ O envio usa a API HTTPS do Brevo (plano gratuito), sem SMTP. Passos:
 Sem `BREVO_API_KEY` o sistema só registra os e-mails no log (driver `console`).
 E-mails são enviados no pedido criado (com o contrato em PDF), pagamento, entrega, retirada,
 finalização e em cada passo da extensão. Uma falha de envio nunca derruba a operação.
+
+### Recuperação de senha
+
+1. `POST /api/auth/forgot-password` com `{ "identifier": "email@dominio.com", "channel": "EMAIL" }`
+   devolve `request_id` e `destination_masked` e envia por e-mail um código de 6 dígitos,
+   válido por 15 minutos. A resposta é a mesma exista a conta ou não.
+2. `POST /api/auth/reset-password` com `{ "request_id", "code", "nova_senha" }` troca a senha
+   e encerra todas as sessões da conta. Código errado, vencido ou já usado: `400 INVALID_RECOVERY_CODE`.
+
+Pedir um código novo invalida o anterior. Conta suspensa não recebe código. Só o canal `EMAIL`
+tem envio; `SMS` e `WHATSAPP` respondem `400 CHANNEL_NOT_AVAILABLE`.
+
+Sem `BREVO_API_KEY` (driver `console`) e fora de produção, ninguém receberia o e-mail; então o
+código volta na resposta em `development_code`, para testar o fluxo. Com o Brevo configurado,
+ou com `NODE_ENV=production`, ele nunca volta.
 
 ### Prazos de extensão
 
