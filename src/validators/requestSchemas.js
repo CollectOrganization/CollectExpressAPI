@@ -449,7 +449,9 @@ const schemas = {
     assinatura_base64: {
       required: true,
       type: "string",
-      maxLength: 420000,
+      // 2 MB em base64 (~2,8 milhões de caracteres) mais o prefixo do
+      // data URI. O tamanho real é conferido em decodificarAssinaturaEmpresa.
+      maxLength: 2_800_000,
     },
   },
 

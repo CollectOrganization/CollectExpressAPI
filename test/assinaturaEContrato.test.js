@@ -32,7 +32,7 @@ const { buscarPedidoDoUsuario } = require("../src/services/acessoPedido");
 const contratoService = require("../src/services/contratoService");
 const assinaturasController = require("../src/controllers/assinaturasController");
 const contratosController = require("../src/controllers/contratosController");
-const { png, jpeg, dataUri } = require("./helpers/imagens");
+const { png, jpeg, webpVp8x, dataUri } = require("./helpers/imagens");
 
 function createResponse() {
   return {
@@ -61,7 +61,7 @@ describe("assinatura da empresa", () => {
     console.error.mockRestore();
   });
 
-  it("salva o PNG 3:1, grava o caminho e não devolve a imagem", async () => {
+  it("salva o PNG, grava o caminho e não devolve a imagem", async () => {
     sql.mockResolvedValueOnce([
       { assinatura_atualizada_em: "2026-11-01T10:00:00Z", anterior: null },
     ]);
@@ -112,12 +112,31 @@ describe("assinatura da empresa", () => {
     expect(antiga.endsWith(arquivos[0])).toBe(false);
   });
 
-  it("rejeita proporção errada, formato errado e tamanho fora do limite", async () => {
+  it("aceita foto de celular (JPEG 4:3) e guarda como .jpg", async () => {
+    sql.mockResolvedValueOnce([
+      { assinatura_atualizada_em: "2026-11-01T10:00:00Z", anterior: null },
+    ]);
+
+    const res = createResponse();
+    await assinaturasController.salvar(
+      {
+        usuario_id: "cacb-1",
+        body: { assinatura_base64: dataUri(jpeg(3000, 2250), "image/jpeg") },
+      },
+      res,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    const arquivos = arquivosDeAssinatura();
+    expect(arquivos).toHaveLength(1);
+    expect(arquivos[0].endsWith(".jpg")).toBe(true);
+  });
+
+  it("rejeita formato sem suporte no PDF e tamanho fora do limite", async () => {
     const casos = [
-      dataUri(png(600, 400)), // não é 3:1
-      dataUri(jpeg(600, 200), "image/jpeg"), // não é PNG
-      dataUri(png(150, 50)), // pequena demais
-      dataUri(png(600, 200, 400 * 1024)), // maior que 300 KB
+      dataUri(webpVp8x(600, 200), "image/webp"), // o pdfkit não lê WebP
+      dataUri(png(100, 40)), // pequena demais
+      dataUri(png(600, 200, 2 * 1024 * 1024 + 1024)), // maior que 2 MB
     ];
 
     for (const assinatura_base64 of casos) {
@@ -187,6 +206,23 @@ describe("assinatura da empresa", () => {
       }),
     );
     expect(Buffer.isBuffer(res.send.mock.calls[0][0])).toBe(true);
+  });
+
+  it("obter devolve JPEG com o Content-Type certo", async () => {
+    const chave = await storage.salvarArquivo(
+      "private/assinaturas",
+      "jpg",
+      jpeg(3000, 2250),
+    );
+
+    sql.mockResolvedValueOnce([{ assinatura_path: chave }]);
+
+    const res = createResponse();
+    await assinaturasController.obter({ usuario_id: "cacb-1" }, res);
+
+    expect(res.set).toHaveBeenCalledWith(
+      expect.objectContaining({ "Content-Type": "image/jpeg" }),
+    );
   });
 
   it("obter responde 404 sem assinatura cadastrada ou com arquivo ausente", async () => {

@@ -708,8 +708,6 @@ Nunca publique:
 ## Funcionalidades pendentes
 
 - refresh token;
-- persistência dos tokens de recuperação;
-- envio de recuperação de senha por e-mail;
 - upload de imagens;
 - gateway de pagamento;
 - transação atômica no checkout;
@@ -793,7 +791,7 @@ se for baixado e commitado. Os PDFs são regerados do banco quando o arquivo som
 | Rota | Perfil | Descrição |
 |---|---|---|
 | `POST/PUT /api/cacambas` | CACAMBEIRO | aceita `foto_base64`, `remover_foto`, `permite_extensao` |
-| `GET/PUT/DELETE /api/cacambeiros/me/assinatura` | CACAMBEIRO | assinatura padrão da empresa (PNG 3:1, 300x100 a 1200x400 px, até 300 KB) |
+| `GET/PUT/DELETE /api/cacambeiros/me/assinatura` | CACAMBEIRO | assinatura padrão da empresa (PNG ou JPEG, qualquer proporção, 150x50 a 4000x4000 px, até 2 MB; o PDF encaixa no quadro) |
 | `POST /api/alugueis/checkout` | CONSUMIDOR | agora com `aceite_termos` e `assinatura_base64` |
 | `GET /api/alugueis/:id/contrato` | dono do pedido / ADMIN | PDF do contrato |
 | `GET/POST /api/alugueis/:id/extensoes` | CONSUMIDOR | lista e solicita extensão |
@@ -813,6 +811,21 @@ O envio usa a API HTTPS do Brevo (plano gratuito), sem SMTP. Passos:
 Sem `BREVO_API_KEY` o sistema só registra os e-mails no log (driver `console`).
 E-mails são enviados no pedido criado (com o contrato em PDF), pagamento, entrega, retirada,
 finalização e em cada passo da extensão. Uma falha de envio nunca derruba a operação.
+
+### Recuperação de senha
+
+1. `POST /api/auth/forgot-password` com `{ "identifier": "email@dominio.com", "channel": "EMAIL" }`
+   devolve `request_id` e `destination_masked` e envia por e-mail um código de 6 dígitos,
+   válido por 15 minutos. A resposta é a mesma exista a conta ou não.
+2. `POST /api/auth/reset-password` com `{ "request_id", "code", "nova_senha" }` troca a senha
+   e encerra todas as sessões da conta. Código errado, vencido ou já usado: `400 INVALID_RECOVERY_CODE`.
+
+Pedir um código novo invalida o anterior. Conta suspensa não recebe código. Só o canal `EMAIL`
+tem envio; `SMS` e `WHATSAPP` respondem `400 CHANNEL_NOT_AVAILABLE`.
+
+Sem `BREVO_API_KEY` (driver `console`) e fora de produção, ninguém receberia o e-mail; então o
+código volta na resposta em `development_code`, para testar o fluxo. Com o Brevo configurado,
+ou com `NODE_ENV=production`, ele nunca volta.
 
 ### Prazos de extensão
 
@@ -970,7 +983,7 @@ do termo; sem ela vale o `JWT_SECRET`, mas trocar o segredo invalida a verifica�
 | `GET/PUT /api/parceiros/me` | PARCEIRO | dados da empresa, materiais e disponibilidade |
 | `GET/PUT /api/parceiros/me/area` | PARCEIRO | área de atuação (centro e raio, como a cerca do caçambeiro) |
 | `GET /api/parceiros/me/pendencias` | PARCEIRO | `AREA_ATUACAO`, `ASSINATURA`, `MATERIAIS` |
-| `GET/PUT/DELETE /api/parceiros/me/assinatura` | PARCEIRO | assinatura da empresa (PNG 3:1) |
+| `GET/PUT/DELETE /api/parceiros/me/assinatura` | PARCEIRO | assinatura da empresa (mesmas regras da do caçambeiro) |
 | `POST /api/chat/coletas/:id/conversa` | partes e ADMIN | abre (ou cria) o chat da coleta |
 | `POST /api/internal/jobs/reciclagem` | cron (`x-jobs-secret`) | expira sinalizações vencidas e envia o lembrete 24 horas antes da retirada |
 

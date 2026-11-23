@@ -2,7 +2,10 @@ const sql = require("../config/db");
 
 const ApiError = require("../utils/apiError");
 const { sendSuccess, sendError } = require("../utils/apiResponse");
-const { decodificarAssinaturaEmpresa } = require("../utils/imageUpload");
+const {
+  decodificarAssinaturaEmpresa,
+  formatoDaImagem,
+} = require("../utils/imageUpload");
 const {
   salvarArquivo,
   lerArquivo,
@@ -388,7 +391,7 @@ const parceirosController = {
     }
   },
 
-  /** GET /api/parceiros/me/assinatura  (image/png) */
+  /** GET /api/parceiros/me/assinatura  (PNG ou JPEG) */
   async obterAssinatura(req, res) {
     try {
       const linhas = await sql`
@@ -423,7 +426,8 @@ const parceirosController = {
       }
 
       res.set({
-        "Content-Type": "image/png",
+        "Content-Type":
+          formatoDaImagem(conteudo)?.mime ?? "application/octet-stream",
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
       });

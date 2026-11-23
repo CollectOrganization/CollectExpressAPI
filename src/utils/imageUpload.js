@@ -291,21 +291,37 @@ function decodificarFotoCacamba(entrada) {
   });
 }
 
+/** Tamanho máximo da assinatura da empresa (cabe no corpo de 3 MB em base64). */
+const MAX_BYTES_ASSINATURA_EMPRESA = 2 * 1024 * 1024;
+
 /**
- * Assinatura padrão da empresa: PNG, até 300 KB, proporção 3:1,
- * entre 300x100 e 1200x400 px.
+ * Assinatura padrão da empresa: PNG ou JPEG, até 2 MB, de 150x50 a
+ * 4000x4000 px, em qualquer proporção.
+ *
+ * Os PDFs encaixam a imagem no quadro da assinatura (`fit`), então foto
+ * de celular, print ou PNG recortado servem. WebP fica de fora porque o
+ * pdfkit não lê esse formato.
  */
 function decodificarAssinaturaEmpresa(entrada) {
   return decodificarImagem(entrada, {
     campo: "assinatura_base64",
-    maxBytes: 300 * 1024,
-    tipos: ["png"],
-    larguraMin: 300,
-    larguraMax: 1200,
-    alturaMin: 100,
-    alturaMax: 400,
-    proporcao: 3,
+    maxBytes: MAX_BYTES_ASSINATURA_EMPRESA,
+    tipos: ["png", "jpeg"],
+    larguraMin: 150,
+    larguraMax: 4000,
+    alturaMin: 50,
+    alturaMax: 4000,
   });
+}
+
+/**
+ * Formato de uma imagem já salva, pelos bytes: `{ extensao, mime }`, ou
+ * `null` se não for PNG, JPEG nem WebP.
+ */
+function formatoDaImagem(buffer) {
+  const detectada = detectarImagem(buffer);
+
+  return detectada ? FORMATOS[detectada.tipo] : null;
 }
 
 /** Assinatura desenhada pelo consumidor: PNG, até 300 KB. */
@@ -322,8 +338,10 @@ function decodificarAssinaturaConsumidor(entrada) {
 }
 
 module.exports = {
+  MAX_BYTES_ASSINATURA_EMPRESA,
   decodificarImagem,
   decodificarFotoCacamba,
   decodificarAssinaturaEmpresa,
   decodificarAssinaturaConsumidor,
+  formatoDaImagem,
 };

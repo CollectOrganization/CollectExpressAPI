@@ -130,5 +130,6 @@ async function enviarEmail(mensagem) {
 
 module.exports = {
   EmailError,
+  driverAtual,
   enviarEmail,
 };

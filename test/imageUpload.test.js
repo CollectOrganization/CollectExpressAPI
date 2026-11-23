@@ -2,9 +2,11 @@ const fc = require("fast-check");
 
 const ApiError = require("../src/utils/apiError");
 const {
+  MAX_BYTES_ASSINATURA_EMPRESA,
   decodificarFotoCacamba,
   decodificarAssinaturaEmpresa,
   decodificarAssinaturaConsumidor,
+  formatoDaImagem,
 } = require("../src/utils/imageUpload");
 const { png, jpeg, webpVp8x, dataUri } = require("./helpers/imagens");
 
@@ -118,38 +120,70 @@ describe("decodificarFotoCacamba", () => {
 });
 
 describe("decodificarAssinaturaEmpresa", () => {
-  it("aceita PNG com proporção 3:1 dentro dos limites", () => {
+  it("aceita foto de celular: JPEG 4:3", () => {
     expect(
-      decodificarAssinaturaEmpresa(dataUri(png(600, 200))),
-    ).toMatchObject({ largura: 600, altura: 200 });
-
-    expect(
-      decodificarAssinaturaEmpresa(dataUri(png(1200, 400))),
-    ).toMatchObject({ largura: 1200 });
+      decodificarAssinaturaEmpresa(dataUri(jpeg(3000, 2250), "image/jpeg")),
+    ).toMatchObject({ tipo: "jpeg", extensao: "jpg", largura: 3000 });
   });
 
-  it("rejeita proporção diferente de 3:1", () => {
-    expect(() =>
-      decodificarAssinaturaEmpresa(dataUri(png(600, 400))),
-    ).toThrow(/Proporção inválida/);
+  it("aceita PNG em qualquer proporção, inclusive o 3:1 de antes", () => {
+    for (const [largura, altura] of [
+      [600, 200],
+      [1200, 400],
+      [600, 400],
+      [400, 600],
+    ]) {
+      expect(
+        decodificarAssinaturaEmpresa(dataUri(png(largura, altura))),
+      ).toMatchObject({ tipo: "png", largura, altura });
+    }
   });
 
-  it("rejeita fora de 300x100 a 1200x400", () => {
+  it("rejeita fora de 150x50 a 4000x4000", () => {
     expect(() =>
-      decodificarAssinaturaEmpresa(dataUri(png(150, 50))),
+      decodificarAssinaturaEmpresa(dataUri(png(100, 40))),
     ).toThrow(/Dimensões inválidas/);
 
     expect(() =>
-      decodificarAssinaturaEmpresa(dataUri(png(1800, 600))),
+      decodificarAssinaturaEmpresa(dataUri(png(5000, 3000))),
     ).toThrow(/Dimensões inválidas/);
   });
 
-  it("aceita somente PNG", () => {
+  it("aceita até 2 MB e rejeita acima disso", () => {
+    expect(
+      decodificarAssinaturaEmpresa(
+        dataUri(png(600, 200, MAX_BYTES_ASSINATURA_EMPRESA - 1024)),
+      ),
+    ).toMatchObject({ tipo: "png" });
+
     expect(() =>
       decodificarAssinaturaEmpresa(
-        dataUri(jpeg(600, 200), "image/jpeg"),
+        dataUri(png(600, 200, MAX_BYTES_ASSINATURA_EMPRESA + 1024)),
       ),
-    ).toThrow(/Formato inválido/);
+    ).toThrow(/excede o limite/);
+  });
+
+  it("rejeita WebP, que o PDF do contrato não lê", () => {
+    expect(() =>
+      decodificarAssinaturaEmpresa(dataUri(webpVp8x(600, 200), "image/webp")),
+    ).toThrow(/Formato inválido. Use PNG, JPEG/);
+  });
+});
+
+describe("formatoDaImagem", () => {
+  it("identifica PNG e JPEG já salvos pelos bytes", () => {
+    expect(formatoDaImagem(png(600, 200))).toEqual({
+      extensao: "png",
+      mime: "image/png",
+    });
+    expect(formatoDaImagem(jpeg(600, 200))).toEqual({
+      extensao: "jpg",
+      mime: "image/jpeg",
+    });
+  });
+
+  it("devolve null para o que não é imagem", () => {
+    expect(formatoDaImagem(Buffer.from("não é imagem"))).toBeNull();
   });
 });
 

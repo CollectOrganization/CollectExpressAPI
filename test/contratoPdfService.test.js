@@ -5,7 +5,18 @@ const {
   formatarData,
   dataDeTermino,
 } = require("../src/services/contratoPdfService");
+const fs = require("fs");
+const path = require("path");
+
 const { png } = require("./helpers/imagens");
+const {
+  decodificarAssinaturaEmpresa,
+} = require("../src/utils/imageUpload");
+
+// Foto JPEG de verdade (as dos helpers só têm o cabeçalho).
+const fotoJpeg = fs.readFileSync(
+  path.join(__dirname, "fixtures", "assinatura-foto.jpg"),
+);
 
 const dadosBase = {
   numero: "COL-1A2B3C4D5E",
@@ -68,6 +79,29 @@ describe("gerarContratoPdf", () => {
         locadora: { ...dadosBase.locadora, assinatura: null },
       }),
     ).resolves.toBeInstanceOf(Buffer);
+  });
+
+  it("embute a assinatura da empresa enviada como foto JPEG", async () => {
+    // A foto passa nas regras de upload...
+    const imagem = decodificarAssinaturaEmpresa(
+      `data:image/jpeg;base64,${fotoJpeg.toString("base64")}`,
+    );
+    expect(imagem.tipo).toBe("jpeg");
+
+    // ...e entra no PDF como imagem, sem erro engolido pelo "registra e segue".
+    const erro = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    // Só a assinatura da empresa: o PNG do helper do locatário não é uma
+    // imagem completa e cairia no "registra e segue".
+    const pdf = await gerarContratoPdf({
+      ...dadosBase,
+      locadora: { ...dadosBase.locadora, assinatura: imagem.buffer },
+      locatario: { ...dadosBase.locatario, assinatura: null },
+    });
+
+    expect(erro.mock.calls).toEqual([]);
+    expect(pdf.toString("latin1")).toContain("/DCTDecode");
+    erro.mockRestore();
   });
 
   it("não quebra com assinatura inválida: registra e segue", async () => {

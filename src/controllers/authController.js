@@ -23,6 +23,7 @@ const {
 } = require("../middlewares/rateLimitMiddleware");
 
 const {
+  CanalIndisponivelError,
   createPasswordRecovery,
   resetPassword: persistPasswordReset,
 } = require("../services/passwordRecoveryService");
@@ -647,6 +648,19 @@ const authController = {
         "Se os dados estiverem cadastrados, você receberá um código de recuperação.",
       );
     } catch (error) {
+      /*
+       * Canal sem envio (SMS, WhatsApp): avisa de verdade. Não depende
+       * de a conta existir, então não revela cadastro.
+       */
+      if (error instanceof CanalIndisponivelError) {
+        return sendError(
+          res,
+          400,
+          "Por enquanto o código só é enviado por e-mail.",
+          "CHANNEL_NOT_AVAILABLE",
+        );
+      }
+
       /*
        * O erro é registrado internamente, mas a resposta continua
        * genérica para reduzir enumeração de contas.
