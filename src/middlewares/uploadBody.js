@@ -17,7 +17,10 @@ const ROTAS_COM_UPLOAD = [
   { metodo: "POST", caminho: /^\/api\/cacambas\/?$/ },
   { metodo: "PUT", caminho: /^\/api\/cacambas\/[^/]+\/?$/ },
   { metodo: "PUT", caminho: /^\/api\/cacambeiros\/me\/assinatura\/?$/ },
+  { metodo: "PUT", caminho: /^\/api\/parceiros\/me\/assinatura\/?$/ },
   { metodo: "POST", caminho: /^\/api\/alugueis\/checkout\/?$/ },
+  // Sinalização de material: o cliente assina o termo na tela.
+  { metodo: "POST", caminho: /^\/api\/ofertas-coleta\/?$/ },
 ];
 
 function ehRotaDeUpload(req) {

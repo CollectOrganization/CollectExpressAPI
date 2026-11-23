@@ -17,7 +17,10 @@ const crypto = require("crypto");
 const sql = require("../config/db");
 
 const ApiError = require("../utils/apiError");
-const { decodificarAssinaturaConsumidor } = require("../utils/imageUpload");
+const {
+  decodificarAssinaturaConsumidor,
+  formatoDaImagem,
+} = require("../utils/imageUpload");
 const {
   salvarArquivo,
   lerArquivo,
@@ -191,8 +194,10 @@ async function assinaturaDeQuemEntrega(usuario, corpo) {
     );
   }
 
+  // A assinatura da empresa pode ser PNG ou JPEG; a cópia mantém o formato.
   const conteudo = await lerArquivo(origem);
-  return salvarArquivo("private/assinaturas", "png", conteudo);
+  const extensao = formatoDaImagem(conteudo)?.extensao ?? "png";
+  return salvarArquivo("private/assinaturas", extensao, conteudo);
 }
 
 async function criarOferta(usuario, corpo, opcoes = {}) {

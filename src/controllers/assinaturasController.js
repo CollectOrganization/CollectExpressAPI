@@ -7,6 +7,7 @@ const {
 } = require("../utils/apiResponse");
 const {
   decodificarAssinaturaEmpresa,
+  formatoDaImagem,
 } = require("../utils/imageUpload");
 const {
   salvarArquivo,
@@ -119,7 +120,7 @@ const assinaturasController = {
   /**
    * GET /api/cacambeiros/me/assinatura
    *
-   * Devolve a imagem (image/png) para o próprio fornecedor ver a prévia.
+   * Devolve a imagem (PNG ou JPEG) para o próprio fornecedor ver a prévia.
    */
   async obter(req, res) {
     try {
@@ -158,7 +159,8 @@ const assinaturasController = {
       }
 
       res.set({
-        "Content-Type": "image/png",
+        "Content-Type":
+          formatoDaImagem(conteudo)?.mime ?? "application/octet-stream",
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
       });

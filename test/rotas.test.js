@@ -65,7 +65,9 @@ describe("rotas de upload usam o parser grande depois do login", () => {
     ["cacambasRoutes", "POST", "/"],
     ["cacambasRoutes", "PUT", "/:id"],
     ["cacambeirosRoutes", "PUT", "/me/assinatura"],
+    ["parceirosRoutes", "PUT", "/me/assinatura"],
     ["alugueisRoutes", "POST", "/checkout"],
+    ["ofertasColetaRoutes", "POST", "/"],
   ];
 
   for (const [arquivo, metodo, caminho] of casos) {
@@ -95,6 +97,57 @@ describe("rotas de upload usam o parser grande depois do login", () => {
   it("toda rota listada em ROTAS_COM_UPLOAD está coberta acima", () => {
     expect(ROTAS_COM_UPLOAD).toHaveLength(casos.length);
   });
+});
+
+/*
+ * O contrário do bloco acima: uma rota que declara `uploadJson` mas não
+ * está em ROTAS_COM_UPLOAD passa antes pelo parser global de 100 KB e
+ * recusa (413) qualquer imagem maior que isso. Lê as montagens do
+ * server.js para pegar também routers novos.
+ */
+describe("toda rota com uploadJson está em ROTAS_COM_UPLOAD", () => {
+  const fs = require("fs");
+  const path = require("path");
+  const { uploadJson, ehRotaDeUpload } = require("../src/middlewares/uploadBody");
+
+  const server = fs.readFileSync(
+    path.join(__dirname, "../src/server.js"),
+    "utf8",
+  );
+
+  const arquivoDaVariavel = Object.fromEntries(
+    [...server.matchAll(/const (\w+) = require\("\.\/routes\/(\w+)"\)/g)].map(
+      ([, variavel, arquivo]) => [variavel, arquivo],
+    ),
+  );
+
+  const montagens = [
+    ...server.matchAll(/app\.use\(\s*"(\/api\/[^"]+)"\s*,\s*(\w+)\s*\)/g),
+  ]
+    .map(([, prefixo, variavel]) => [prefixo, arquivoDaVariavel[variavel]])
+    .filter(([, arquivo]) => arquivo);
+
+  it("encontra as montagens no server.js", () => {
+    expect(montagens.length).toBeGreaterThan(10);
+  });
+
+  for (const [prefixo, arquivo] of montagens) {
+    const router = require(`../src/routes/${arquivo}`);
+    const rotasDeUpload = listarRotas(router).filter((rota) =>
+      rota.camadas.includes(uploadJson),
+    );
+
+    for (const rota of rotasDeUpload) {
+      // ":id" vira um valor qualquer, como chegaria numa requisição.
+      const caminho = prefixo + rota.caminho.replace(/:\w+/g, "x1");
+
+      it(`${rota.metodo} ${caminho} (${arquivo})`, () => {
+        expect(ehRotaDeUpload({ method: rota.metodo, path: caminho })).toBe(
+          true,
+        );
+      });
+    }
+  }
 });
 
 describe("novas rotas de aluguéis", () => {

@@ -791,7 +791,7 @@ se for baixado e commitado. Os PDFs são regerados do banco quando o arquivo som
 | Rota | Perfil | Descrição |
 |---|---|---|
 | `POST/PUT /api/cacambas` | CACAMBEIRO | aceita `foto_base64`, `remover_foto`, `permite_extensao` |
-| `GET/PUT/DELETE /api/cacambeiros/me/assinatura` | CACAMBEIRO | assinatura padrão da empresa (PNG 3:1, 300x100 a 1200x400 px, até 300 KB) |
+| `GET/PUT/DELETE /api/cacambeiros/me/assinatura` | CACAMBEIRO | assinatura padrão da empresa (PNG ou JPEG, qualquer proporção, 150x50 a 4000x4000 px, até 2 MB; o PDF encaixa no quadro) |
 | `POST /api/alugueis/checkout` | CONSUMIDOR | agora com `aceite_termos` e `assinatura_base64` |
 | `GET /api/alugueis/:id/contrato` | dono do pedido / ADMIN | PDF do contrato |
 | `GET/POST /api/alugueis/:id/extensoes` | CONSUMIDOR | lista e solicita extensão |
@@ -983,7 +983,7 @@ do termo; sem ela vale o `JWT_SECRET`, mas trocar o segredo invalida a verifica�
 | `GET/PUT /api/parceiros/me` | PARCEIRO | dados da empresa, materiais e disponibilidade |
 | `GET/PUT /api/parceiros/me/area` | PARCEIRO | área de atuação (centro e raio, como a cerca do caçambeiro) |
 | `GET /api/parceiros/me/pendencias` | PARCEIRO | `AREA_ATUACAO`, `ASSINATURA`, `MATERIAIS` |
-| `GET/PUT/DELETE /api/parceiros/me/assinatura` | PARCEIRO | assinatura da empresa (PNG 3:1) |
+| `GET/PUT/DELETE /api/parceiros/me/assinatura` | PARCEIRO | assinatura da empresa (mesmas regras da do caçambeiro) |
 | `POST /api/chat/coletas/:id/conversa` | partes e ADMIN | abre (ou cria) o chat da coleta |
 | `POST /api/internal/jobs/reciclagem` | cron (`x-jobs-secret`) | expira sinalizações vencidas e envia o lembrete 24 horas antes da retirada |
 
