@@ -1,5 +1,11 @@
 jest.mock("../src/config/db", () => jest.fn());
 
+// A pendência de assinatura só conta se o arquivo existe: aqui existe
+// quando há um caminho gravado.
+jest.mock("../src/services/storageService", () => ({
+  arquivoExiste: jest.fn(async (chave) => Boolean(chave)),
+}));
+
 jest.mock("../src/services/geocodingService", () => {
   const actual = jest.requireActual("../src/services/geocodingService");
 

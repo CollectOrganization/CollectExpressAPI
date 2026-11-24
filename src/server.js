@@ -44,7 +44,11 @@ const extensoesController = require("./controllers/extensoesController");
 
 // Cria a limpeza dos tokens
 const {startTokenCleanup,} = require("./services/tokenCleanupService");
-const { pastaPublica } = require("./services/storageService");
+const {
+  pastaPublica,
+  servirUploadDoBanco,
+  sincronizarDiscoComBanco,
+} = require("./services/storageService");
 const {
   iniciarVarreduraDeExtensoes,
 } = require("./services/extensaoService");
@@ -220,6 +224,9 @@ app.use(
   }),
 );
 
+// Foto que sumiu do disco (deploy) é servida da cópia guardada no banco.
+app.use("/uploads", servirUploadDoBanco);
+
 /**
  * Rota raiz.
  */
@@ -322,6 +329,13 @@ iniciarVarreduraDeReciclagem();
 // Registra variáveis ausentes e apaga logs antigos (padrão: 30 dias).
 logService.registrarInicializacao();
 logService.iniciarLimpezaDosLogs();
+
+// Copia para o banco os arquivos que ainda só existem no disco.
+sincronizarDiscoComBanco().then((copiados) => {
+  if (copiados > 0) {
+    console.log(`${copiados} arquivo(s) copiado(s) do disco para o banco.`);
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`API disponível em http://localhost:${PORT}/api`);

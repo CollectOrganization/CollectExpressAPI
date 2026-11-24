@@ -9,6 +9,7 @@ const {
 const {
   salvarArquivo,
   lerArquivo,
+  arquivoExiste,
   removerArquivo,
 } = require("../services/storageService");
 const { lerArea } = require("../services/areaAtendimentoService");
@@ -102,7 +103,7 @@ const parceirosController = {
             ? null
             : Number(linha.capacidade_diaria_kg),
         disponivel: linha.disponivel,
-        tem_assinatura: Boolean(linha.assinatura_path),
+        tem_assinatura: await arquivoExiste(linha.assinatura_path),
         materiais: await materiaisDoParceiro(req.usuario_id),
         area: {
           definida: area.definida,

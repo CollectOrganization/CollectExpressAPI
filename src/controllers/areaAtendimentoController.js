@@ -7,6 +7,7 @@ const {
 const {
   lerArea,
 } = require("../services/areaAtendimentoService");
+const { arquivoExiste } = require("../services/storageService");
 
 /**
  * Área de atendimento (cerca virtual circular) do caçambeiro e as
@@ -141,7 +142,11 @@ const areaAtendimentoController = {
       // Sem perfil de fornecedor, as duas coisas estão pendentes.
       const linha = rows[0];
       const areaDefinida = linha ? lerArea(linha).definida : false;
-      const assinaturaCadastrada = Boolean(linha?.assinatura_path);
+      // Só conta se o arquivo ainda existe: com o caminho no banco e o
+      // arquivo perdido, o contrato saía sem a assinatura da empresa.
+      const assinaturaCadastrada = await arquivoExiste(
+        linha?.assinatura_path,
+      );
 
       const pendencias = [];
 

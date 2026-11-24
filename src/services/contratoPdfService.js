@@ -280,7 +280,9 @@ function blocoDeAssinaturas(doc, dados, logo) {
     },
     {
       imagem: dados.locatario.assinatura,
-      fallback: null,
+      fallback: dados.locatario.semImagemDaAssinatura
+        ? "Aceite eletrônico registrado (imagem da assinatura indisponível)"
+        : null,
       nome: dados.locatario.nome,
       papel: "Locatário",
       nota: `Aceite em ${formatarDataHora(dados.aceite.em)}`,

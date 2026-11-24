@@ -149,9 +149,16 @@ async function emitirContrato(aluguelId) {
     contrato.assinatura_consumidor_path,
   );
 
+  /*
+   * Se o arquivo da assinatura se perdeu (disco apagado antes de os
+   * arquivos irem para o banco), o contrato ainda vale: o aceite com data,
+   * hora e IP está no banco. O PDF sai com essa informação no lugar da
+   * imagem, em vez de o download falhar para todo mundo.
+   */
   if (!assinaturaConsumidor) {
-    throw new Error(
-      "Assinatura do consumidor não encontrada para o contrato.",
+    console.warn(
+      `Contrato ${codigoDoPedido(aluguelId)}: imagem da assinatura do ` +
+        "consumidor indisponível; gerado só com o aceite registrado.",
     );
   }
 
@@ -203,6 +210,7 @@ async function emitirContrato(aluguelId) {
       documento: pedido.consumidor_documento,
       email: pedido.consumidor_email,
       assinatura: assinaturaConsumidor,
+      semImagemDaAssinatura: !assinaturaConsumidor,
     },
     endereco: {
       cep: pedido.cep,

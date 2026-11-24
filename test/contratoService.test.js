@@ -237,17 +237,47 @@ describe("contratoService.emitirContrato", () => {
     expect(sql).toHaveBeenCalledTimes(4);
   });
 
-  it("falha com clareza se a assinatura do consumidor sumiu", async () => {
+  it("gera o contrato mesmo sem a imagem da assinatura do consumidor", async () => {
+    // O arquivo se perdeu (disco apagado), mas o aceite está no banco.
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    const { gerarContratoPdf } = require("../src/services/contratoPdfService");
+
     sql
       .mockResolvedValueOnce([
         contratoPendente("private/assinaturas/inexistente.png"),
       ])
       .mockResolvedValueOnce([pedido])
-      .mockResolvedValueOnce(itens);
+      .mockResolvedValueOnce(itens)
+      .mockResolvedValueOnce([]);
 
-    await expect(
-      contratoService.emitirContrato(ALUGUEL_ID),
-    ).rejects.toThrow(/Assinatura do consumidor/);
+    const pdf = await contratoService.emitirContrato(ALUGUEL_ID);
+
+    expect(pdf.subarray(0, 5).toString()).toBe("%PDF-");
+
+    const dados = gerarContratoPdf.mock.calls[0][0];
+
+    expect(dados.locatario.assinatura).toBeNull();
+    expect(dados.locatario.semImagemDaAssinatura).toBe(true);
+    expect(dados.aceite.ip).toBe("203.0.113.5");
+
+    console.warn.mockRestore();
+  });
+
+  it("com a assinatura presente não marca o aviso de imagem ausente", async () => {
+    const { consumidor } = await prepararAssinaturas();
+    const { gerarContratoPdf } = require("../src/services/contratoPdfService");
+
+    sql
+      .mockResolvedValueOnce([contratoPendente(consumidor)])
+      .mockResolvedValueOnce([pedido])
+      .mockResolvedValueOnce(itens)
+      .mockResolvedValueOnce([]);
+
+    await contratoService.emitirContrato(ALUGUEL_ID);
+
+    expect(
+      gerarContratoPdf.mock.calls[0][0].locatario.semImagemDaAssinatura,
+    ).toBe(false);
   });
 
   it("calcula a taxa de entrega pelo que foi cobrado além das caçambas", async () => {

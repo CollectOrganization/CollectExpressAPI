@@ -183,6 +183,18 @@ function blocoDeAssinaturas(doc, dados, logo) {
       } catch (erro) {
         console.error("Assinatura inválida no documento:", erro.message);
       }
+    } else {
+      // Arquivo da assinatura indisponível: o aceite está registrado.
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(8.5)
+        .fillColor(CINZA)
+        .text(
+          "Aceite eletrônico registrado (imagem da assinatura indisponível)",
+          x + 4,
+          topo + areaImagem / 2 - 6,
+          { width: largura - 8, align: "center" },
+        );
     }
 
     const linhaY = topo + areaImagem + 4;

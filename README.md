@@ -1017,3 +1017,17 @@ Cuidados:
 - Logs com mais de 30 dias são apagados (`LOGS_RETENCAO_DIAS`). `LOGS_DESATIVADOS=true` desliga tudo; nos testes (`NODE_ENV=test`) já vem desligado.
 - O limite geral por IP subiu de 100 para 300 requisições por minuto (`GLOBAL_RATE_LIMIT`): vários testadores na mesma rede dividem o limite e o app consulta o chat de tempos em tempos.
 - `PUT /api/cacambeiros/me` (`horario_inicio`, `horario_fim`, `taxa_entrega`) atualiza a loja do fornecedor; nome e telefone seguem em `PUT /api/usuarios/perfil`.
+## Arquivos (fotos, assinaturas e PDFs)
+
+O disco do Render (plano gratuito) é apagado a cada reinício e a cada deploy. Antes, isso fazia as assinaturas e os contratos sumirem e o download do contrato dar "Erro interno ao gerar o contrato" para fornecedor, admin e cliente (a rota é a mesma, `GET /api/alugueis/:id/contrato`).
+
+```bash
+npm run migrate:arquivos   # cria a tabela arquivos (aditiva, pode repetir)
+```
+
+- Cada arquivo é gravado no banco (`arquivos`, em base64) e no disco. O disco virou cache: se o arquivo não está nele, a API lê do banco e o devolve ao disco.
+- Fotos de caçamba que sumiram do disco são servidas do banco em `/uploads/...`.
+- Na inicialização, a API copia para o banco o que ainda só existe no disco.
+- Se a imagem da assinatura do cliente já se perdeu, o contrato é gerado do mesmo jeito, com "Aceite eletrônico registrado (imagem da assinatura indisponível)" e a data, hora e IP do aceite. O mesmo vale para o termo de coleta.
+- A pendência "assinatura" do fornecedor e do parceiro só conta se o arquivo existe; sem ele, o app pede para enviar de novo.
+- Arquivos que já tinham sumido antes desta mudança não voltam: fotos precisam ser enviadas de novo e assinaturas da empresa também.

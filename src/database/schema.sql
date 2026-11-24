@@ -759,3 +759,13 @@ CREATE TABLE IF NOT EXISTS logs_erros (
 CREATE INDEX IF NOT EXISTS idx_logs_erros_criado_em ON logs_erros (criado_em DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_erros_origem_nivel ON logs_erros (origem, nivel, criado_em DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_erros_codigo ON logs_erros (codigo, criado_em DESC);
+
+-- Cópia durável de fotos, assinaturas e PDFs (o disco do Render é apagado a cada deploy).
+-- Veja src/scripts/arquivosMigration.js.
+CREATE TABLE IF NOT EXISTS arquivos (
+  chave VARCHAR(200) PRIMARY KEY,
+  conteudo_base64 TEXT NOT NULL,
+  tamanho INTEGER NOT NULL,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

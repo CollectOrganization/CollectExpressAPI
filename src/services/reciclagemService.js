@@ -195,7 +195,23 @@ async function assinaturaDeQuemEntrega(usuario, corpo) {
   }
 
   // A assinatura da empresa pode ser PNG ou JPEG; a cópia mantém o formato.
-  const conteudo = await lerArquivo(origem);
+  let conteudo;
+
+  try {
+    conteudo = await lerArquivo(origem);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+
+    // O arquivo se perdeu: pede para enviar de novo, em vez de erro 500.
+    throw new ApiError(
+      400,
+      "Sua assinatura não foi encontrada. Envie-a de novo no perfil da loja.",
+      "SIGNATURE_REQUIRED",
+    );
+  }
+
   const extensao = formatoDaImagem(conteudo)?.extensao ?? "png";
   return salvarArquivo("private/assinaturas", extensao, conteudo);
 }
@@ -1255,7 +1271,22 @@ async function agendarColeta(usuario, corpo, opcoes = {}) {
   let assinaturaParceiroPath = null;
 
   try {
-    const conteudo = await lerArquivo(assinaturaOrigem);
+    let conteudo;
+
+    try {
+      conteudo = await lerArquivo(assinaturaOrigem);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+
+      throw new ApiError(
+        400,
+        "A assinatura da empresa não foi encontrada. Envie-a de novo no perfil.",
+        "SIGNATURE_REQUIRED",
+      );
+    }
+
     assinaturaParceiroPath = await salvarArquivo(
       "private/assinaturas",
       "png",
