@@ -26,6 +26,7 @@
     "migrate:chat": "node src/scripts/chatMigration.js",
     "migrate:reciclagem": "node src/scripts/reciclagemMigration.js",
     "migrate:logs": "node src/scripts/logsMigration.js",
+    "migrate:analise-cnpj": "node src/scripts/analiseCnpjMigration.js",
     "migrate:arquivos": "node src/scripts/arquivosMigration.js",
     "logs:ver": "node src/scripts/verLogs.js",
     "test:seed": "node src/scripts/testSeed.js",
@@ -33,6 +34,7 @@
     "test:watch": "jest --watch"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.14.0",
     "@neondatabase/serverless": "^1.1.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",

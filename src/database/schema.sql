@@ -769,3 +769,16 @@ CREATE TABLE IF NOT EXISTS arquivos (
   criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Análise do CNPJ com IA (PLN) para a aprovação de fornecedores e parceiros.
+-- Uma linha por usuário. Veja src/services/analiseCnpjService.js e src/scripts/analiseCnpjMigration.js.
+CREATE TABLE IF NOT EXISTS analises_cnpj (
+  usuario_id UUID PRIMARY KEY REFERENCES usuarios(id) ON DELETE CASCADE,
+  nota NUMERIC(3, 1),
+  recomendacao VARCHAR(10) NOT NULL,
+  resultado JSONB NOT NULL,
+  modelo VARCHAR(60),
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT analises_cnpj_recomendacao_check CHECK (recomendacao IN ('APROVAR', 'REVISAR', 'REPROVAR')),
+  CONSTRAINT analises_cnpj_nota_check CHECK (nota IS NULL OR (nota >= 0 AND nota <= 10))
+);

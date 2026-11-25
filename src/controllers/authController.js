@@ -28,6 +28,10 @@ const {
   resetPassword: persistPasswordReset,
 } = require("../services/passwordRecoveryService");
 
+const {
+  agendarAnaliseDoCadastro,
+} = require("../services/analiseCnpjService");
+
 /**
  * Perfis que podem ser criados através do cadastro público.
  *
@@ -335,6 +339,12 @@ const authController = {
       `;
 
       const usuario = resultado[0];
+
+      // Análise do CNPJ com IA em segundo plano: quando o admin abrir o
+      // cadastro pendente, o parecer já está pronto.
+      if (statusInicial === "PENDENTE") {
+        agendarAnaliseDoCadastro(usuario);
+      }
 
       const message =
         tipo_perfil === "CACAMBEIRO" || tipo_perfil === "PARCEIRO"

@@ -34,6 +34,7 @@ describe("rotas carregam com todos os handlers definidos", () => {
     "cacambasRoutes",
     "cacambeirosRoutes",
     "extensoesRoutes",
+    "usuariosRoutes",
   ];
 
   for (const arquivo of arquivos) {
