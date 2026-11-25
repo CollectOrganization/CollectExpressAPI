@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const usuariosController = require("../controllers/usuariosController");
+const analiseCnpjController = require("../controllers/analiseCnpjController");
 const authMiddleware = require("../middlewares/authMiddleware");
 const roleMiddleware = require("../middlewares/roleMiddleware");
 
@@ -92,6 +93,26 @@ router.patch(
   validationMiddleware(schemas.uuidParam, "params"),
   validationMiddleware(schemas.changeUserStatus),
   usuariosController.alterarStatus,
+);
+
+/*
+ * Análise do CNPJ com IA (PLN) para apoiar a aprovação de
+ * fornecedores e parceiros. GET lê a última; POST gera de novo.
+ */
+router.get(
+  "/:id/analise-cnpj",
+  authMiddleware,
+  roleMiddleware(["ADMIN"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  analiseCnpjController.obter,
+);
+
+router.post(
+  "/:id/analise-cnpj",
+  authMiddleware,
+  roleMiddleware(["ADMIN"]),
+  validationMiddleware(schemas.uuidParam, "params"),
+  analiseCnpjController.gerar,
 );
 
 /*

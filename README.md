@@ -340,6 +340,8 @@ A senha `123456` é utilizada somente pelos dados acadêmicos do seed.
 | `GET` | `/api/usuarios` | `ADMIN` |
 | `GET` | `/api/usuarios/:id` | `ADMIN` |
 | `POST` | `/api/usuarios` | `ADMIN` |
+| `GET` | `/api/usuarios/:id/analise-cnpj` | `ADMIN` |
+| `POST` | `/api/usuarios/:id/analise-cnpj` | `ADMIN` |
 
 ### Caçambas
 
@@ -1031,3 +1033,18 @@ npm run migrate:arquivos   # cria a tabela arquivos (aditiva, pode repetir)
 - Se a imagem da assinatura do cliente já se perdeu, o contrato é gerado do mesmo jeito, com "Aceite eletrônico registrado (imagem da assinatura indisponível)" e a data, hora e IP do aceite. O mesmo vale para o termo de coleta.
 - A pendência "assinatura" do fornecedor e do parceiro só conta se o arquivo existe; sem ele, o app pede para enviar de novo.
 - Arquivos que já tinham sumido antes desta mudança não voltam: fotos precisam ser enviadas de novo e assinaturas da empresa também.
+
+## Análise do CNPJ com IA (PLN)
+
+Ajuda o administrador a aprovar caçambeiros e parceiros de reciclagem. Relatório completo no repositório do app: `docs/pln/relatorio-pln.md`.
+
+```bash
+npm run migrate:analise-cnpj   # cria a tabela analises_cnpj (aditiva, pode repetir)
+```
+
+- No cadastro de um CACAMBEIRO ou PARCEIRO (status PENDENTE), a análise roda em segundo plano e fica salva. `POST /api/usuarios/:id/analise-cnpj` refaz; `GET` lê a última (404 `ANALISE_NAO_ENCONTRADA` se não houver).
+- Fluxo: dígitos verificadores, consulta na BrasilAPI (reserva: Minha Receita), regras fixas (situação cadastral, tempo de abertura) e uma chamada ao LLM `openai/gpt-oss-120b` pela Groq (plano gratuito), com saída em JSON Schema estrito, que classifica as atividades (CNAE) e o nome e escreve o parecer. A nota de 0 a 10 vem de pesos fixos (`PESOS` em `src/services/analiseCnpjService.js`); o LLM não escolhe o número.
+- CNPJ inválido, inexistente ou com situação diferente de ATIVA é reprovado pelas regras, sem chamar o LLM.
+- Sócios, e-mail e telefone da empresa não vão para o LLM nem para o banco.
+- Sem `GROQ_API_KEY` (crie em console.groq.com/keys), a análise sai só com as regras (sem nota) e pede conferência manual da atividade. `ANALISE_CNPJ_IA=false` desliga o LLM, `ANALISE_CNPJ_NO_CADASTRO=false` desliga a análise automática no cadastro e `ANALISE_CNPJ_MODELO` troca o modelo da Groq (padrão `openai/gpt-oss-120b`).
+- Fontes fora do ar: `503 CNPJ_CONSULTA_INDISPONIVEL`.
