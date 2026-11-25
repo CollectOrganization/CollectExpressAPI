@@ -45,25 +45,37 @@ function empresaDeCacambas(extra = {}) {
 }
 
 /** Roteia as chamadas de fetch por trecho da URL. */
-function simularFontes({ brasilApi, minhaReceita }) {
+function simularFontes({ brasilApi, minhaReceita, groq }) {
   global.fetch = jest.fn(async (url) => {
     const texto = String(url);
-    const responder = texto.includes("brasilapi.com.br") ? brasilApi : minhaReceita;
+    let responder = minhaReceita;
+    if (texto.includes("brasilapi.com.br")) responder = brasilApi;
+    if (texto.includes("api.groq.com")) responder = groq;
 
     if (responder instanceof Error) throw responder;
     return responder;
   });
 }
 
-/** Cliente falso do Claude que devolve [corpo] como JSON. */
-function iaRespondendo(corpo) {
-  const create = jest.fn(async () => ({
-    model: "claude-opus-5-5",
-    stop_reason: "end_turn",
-    content: [{ type: "text", text: JSON.stringify(corpo) }],
-  }));
+/** Resposta da Groq (formato chat completions) com [corpo] como JSON. */
+function respostaGroq(corpo) {
+  return {
+    model: "openai/gpt-oss-120b",
+    choices: [
+      {
+        index: 0,
+        finish_reason: "stop",
+        message: { role: "assistant", content: JSON.stringify(corpo) },
+      },
+    ],
+  };
+}
 
-  analise.definirClienteLlm({ beta: { messages: { create } } });
+/** Troca a chamada ao LLM por uma função falsa que devolve [corpo]. */
+function iaRespondendo(corpo) {
+  const create = jest.fn(async () => respostaGroq(corpo));
+
+  analise.definirClienteLlm(create);
   return create;
 }
 
@@ -92,6 +104,7 @@ beforeEach(() => {
 afterEach(() => {
   analise.definirClienteLlm(null);
   delete process.env.ANALISE_CNPJ_IA;
+  delete process.env.GROQ_API_KEY;
   jest.restoreAllMocks();
 });
 
@@ -137,19 +150,23 @@ describe("analisarCnpj", () => {
     expect(resultado.nota).toBe(10);
     expect(resultado.recomendacao).toBe("APROVAR");
     expect(resultado.fonte).toBe("BrasilAPI");
-    expect(resultado.ia).toEqual({ usada: true, modelo: "claude-opus-5-5", motivo: null });
+    expect(resultado.ia).toEqual({ usada: true, modelo: "openai/gpt-oss-120b", motivo: null });
     expect(resultado.parecer).toContain("coleta de resíduos");
     expect(resultado.cnpj).toBe("**.***.333/0001-81");
     expect(resultado.checagens.map((c) => c.pontos)).toEqual([35, 15, 40, 10]);
 
-    // Uma chamada, com saída em JSON Schema e sem dados pessoais.
+    // Uma chamada, com saída em JSON Schema estrito e sem dados pessoais.
     const [params] = create.mock.calls[0];
-    expect(params.model).toBe("claude-opus-5-5");
-    expect(params.output_config.format.type).toBe("json_schema");
-    expect(params.output_config.effort).toBe("low");
-    expect(params.fallbacks).toBe("default");
+    expect(params.model).toBe("openai/gpt-oss-120b");
+    expect(params.temperature).toBe(0);
+    expect(params.reasoning_effort).toBe("low");
+    expect(params.response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "analise_cnpj", strict: true, schema: analise.ESQUEMA_RESPOSTA },
+    });
+    expect(params.messages[0]).toEqual({ role: "system", content: analise.INSTRUCOES });
 
-    const mensagem = params.messages[0].content;
+    const mensagem = params.messages[1].content;
     expect(mensagem).toContain("Coleta de resíduos não-perigosos");
     expect(mensagem).toContain('"JR Caçambas"');
     expect(mensagem).not.toContain("JOSE ROBERTO");
@@ -251,25 +268,67 @@ describe("analisarCnpj", () => {
     );
   });
 
-  it("sem credencial da IA: nota em branco e pede conferência manual", async () => {
+  it("sem GROQ_API_KEY: nota em branco e pede conferência manual", async () => {
+    delete process.env.GROQ_API_KEY;
     simularFontes({ brasilApi: resposta(200, empresaDeCacambas()) });
-    analise.definirClienteLlm({
-      beta: {
-        messages: {
-          create: jest.fn(async () => {
-            throw new Error("Could not resolve authentication method.");
-          }),
-        },
-      },
-    });
 
     const resultado = await analise.analisarCnpj(entrada, { agora: AGORA });
 
     expect(resultado.nota).toBeNull();
     expect(resultado.recomendacao).toBe("REVISAR");
     expect(resultado.ia.usada).toBe(false);
-    expect(resultado.ia.motivo).toContain("ANTHROPIC_API_KEY");
+    expect(resultado.ia.motivo).toContain("GROQ_API_KEY");
     expect(resultado.parecer).toContain("Confira manualmente");
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("chama a Groq por HTTP com a chave e lê a resposta", async () => {
+    process.env.GROQ_API_KEY = "gsk_teste";
+    simularFontes({
+      brasilApi: resposta(200, empresaDeCacambas()),
+      groq: resposta(200, respostaGroq(respostaIa())),
+    });
+
+    const resultado = await analise.analisarCnpj(entrada, { agora: AGORA });
+
+    const [url, opcoes] = global.fetch.mock.calls[1];
+    expect(url).toBe("https://api.groq.com/openai/v1/chat/completions");
+    expect(opcoes.headers.Authorization).toBe("Bearer gsk_teste");
+    expect(JSON.parse(opcoes.body).model).toBe("openai/gpt-oss-120b");
+    expect(resultado.nota).toBe(10);
+    expect(resultado.ia.usada).toBe(true);
+  });
+
+  it.each([
+    [401, {}, "A chave da IA (GROQ_API_KEY) é inválida."],
+    [429, {}, "Limite do plano gratuito da Groq atingido. Tente de novo em instantes."],
+    [400, { error: { code: "json_validate_failed" } }, "A IA respondeu fora do formato."],
+    [503, {}, "O serviço de IA respondeu com erro (503)."],
+  ])("Groq responde %i: sem nota e com o motivo", async (status, corpo, motivo) => {
+    process.env.GROQ_API_KEY = "gsk_teste";
+    simularFontes({
+      brasilApi: resposta(200, empresaDeCacambas()),
+      groq: resposta(status, corpo),
+    });
+
+    const resultado = await analise.analisarCnpj(entrada, { agora: AGORA });
+
+    expect(resultado.nota).toBeNull();
+    expect(resultado.ia.motivo).toBe(motivo);
+    expect(resultado.ia.motivo).not.toContain("gsk_teste");
+  });
+
+  it("resposta cortada por limite de tokens não vira nota", async () => {
+    simularFontes({ brasilApi: resposta(200, empresaDeCacambas()) });
+    analise.definirClienteLlm(async () => ({
+      model: "openai/gpt-oss-120b",
+      choices: [{ finish_reason: "length", message: { content: '{"ativ' } }],
+    }));
+
+    const resultado = await analise.analisarCnpj(entrada, { agora: AGORA });
+
+    expect(resultado.nota).toBeNull();
+    expect(resultado.ia.motivo).toBe("A resposta da IA veio cortada.");
   });
 
   it("resposta da IA fora do formato não vira nota", async () => {

@@ -9,7 +9,8 @@
  *    descartados: não ajudam na análise e são dados pessoais (LGPD).
  * 2. Regras fixas: dígitos verificadores, CNPJ encontrado, situação
  *    cadastral e tempo de abertura.
- * 3. Um LLM (Claude), só nas partes em linguagem natural:
+ * 3. Um LLM (gpt-oss-120b, modelo aberto da OpenAI, servido pela Groq),
+ *    só nas partes em linguagem natural:
  *    - classificação zero-shot: as atividades (descrições de CNAE) servem
  *      para o perfil? As compatíveis quase nunca têm a palavra "caçamba";
  *    - comparação do nome digitado no cadastro com a razão social e o
@@ -21,15 +22,16 @@
  * quem aprova ou recusa é o administrador.
  */
 
-const Anthropic = require("@anthropic-ai/sdk").default;
-
 const sql = require("../config/db");
 
 const BRASIL_API = "https://brasilapi.com.br/api/cnpj/v1";
 const MINHA_RECEITA = "https://minhareceita.org";
 const TIMEOUT_CONSULTA_MS = 8000;
 
-const MODELO_PADRAO = "claude-opus-5-5";
+// API da Groq no formato da OpenAI (chat completions).
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const TIMEOUT_IA_MS = 60_000;
+const MODELO_PADRAO = "openai/gpt-oss-120b";
 
 /** Pesos da nota. Somam 100 pontos (nota = pontos / 10). */
 const PESOS = {
@@ -81,6 +83,14 @@ class RespostaIaInvalidaError extends Error {
   constructor(message) {
     super(message);
     this.name = "RespostaIaInvalidaError";
+  }
+}
+
+/** A IA não rodou (sem chave, chave inválida, limite, rede). A mensagem vai para a tela. */
+class IaIndisponivelError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "IaIndisponivelError";
   }
 }
 
@@ -308,7 +318,7 @@ Você recebe os dados públicos de um CNPJ (Receita Federal), o perfil em que a 
    - PARCIAL: há relação, mas sobra dúvida.
    - INCONSISTENTE: parecem empresas diferentes.
 
-3. pontos_de_atencao: até 4 frases curtas com o que o administrador deve conferir antes de decidir. Pode ficar vazio.
+3. pontos_de_atencao: até 4 frases curtas com o que o administrador deve conferir antes de decidir. Pode ficar vazio. Não aponte falta de acento nem letras maiúsculas: a Receita grava todos os nomes assim.
 
 4. parecer: de 2 a 4 frases em português, para o administrador, resumindo a análise (atividade, nome e as checagens automáticas recebidas). Não dê nota numérica e não diga que aprovou ou recusou: a decisão é do administrador.
 
@@ -346,19 +356,63 @@ const ESQUEMA_RESPOSTA = {
   additionalProperties: false,
 };
 
-let clienteLlm = null;
+/** POST na Groq. Devolve o JSON da resposta ou lança um erro com o motivo. */
+async function chamarGroqPorHttp(corpo) {
+  const chave = process.env.GROQ_API_KEY?.trim();
 
-function obterClienteLlm() {
-  if (!clienteLlm) {
-    clienteLlm = new Anthropic({ timeout: 60_000, maxRetries: 1 });
+  if (!chave) {
+    throw new IaIndisponivelError(
+      "IA não configurada: defina GROQ_API_KEY no .env da API.",
+    );
   }
 
-  return clienteLlm;
+  let resposta;
+
+  try {
+    resposta = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${chave}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(corpo),
+      signal: AbortSignal.timeout(TIMEOUT_IA_MS),
+    });
+  } catch {
+    throw new IaIndisponivelError("Não foi possível falar com o serviço de IA (Groq).");
+  }
+
+  const json = await resposta.json().catch(() => null);
+
+  if (resposta.ok && json) {
+    return json;
+  }
+
+  if (resposta.status === 401) {
+    throw new IaIndisponivelError("A chave da IA (GROQ_API_KEY) é inválida.");
+  }
+
+  if (resposta.status === 429) {
+    throw new IaIndisponivelError(
+      "Limite do plano gratuito da Groq atingido. Tente de novo em instantes.",
+    );
+  }
+
+  // A Groq confere a saída contra o JSON Schema e devolve 400 se não bater.
+  if (json?.error?.code === "json_validate_failed") {
+    throw new RespostaIaInvalidaError("A IA respondeu fora do formato.");
+  }
+
+  throw new IaIndisponivelError(
+    `O serviço de IA respondeu com erro (${resposta.status}).`,
+  );
 }
 
-/** Troca o cliente do LLM (usado nos testes). `null` volta ao padrão. */
-function definirClienteLlm(cliente) {
-  clienteLlm = cliente;
+let chamarLlm = chamarGroqPorHttp;
+
+/** Troca a chamada ao LLM (usado nos testes). `null` volta ao padrão. */
+function definirClienteLlm(funcao) {
+  chamarLlm = funcao ?? chamarGroqPorHttp;
 }
 
 function modeloConfigurado() {
@@ -417,70 +471,67 @@ function validarRespostaIa(resposta) {
 }
 
 /**
- * Uma chamada ao Claude com saída estruturada (JSON Schema). Esforço
- * baixo: é classificação de texto curto, não precisa de raciocínio longo.
+ * Uma chamada ao LLM com saída estruturada: com `strict`, a resposta tem
+ * de seguir o ESQUEMA_RESPOSTA (e validarRespostaIa confere de novo).
+ * Temperatura 0 para a classificação variar o mínimo; raciocínio curto,
+ * porque é classificação de texto curto.
  */
 async function analisarTextoComIa({ perfil, nomeInformado, dados, checagens }) {
-  const resposta = await obterClienteLlm().beta.messages.create({
-    model: modeloConfigurado(),
-    max_tokens: 8000,
-    // Se o modelo recusar por engano, a própria API tenta outro modelo.
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default",
-    output_config: {
-      effort: "low",
-      format: { type: "json_schema", schema: ESQUEMA_RESPOSTA },
+  const modelo = modeloConfigurado();
+
+  const corpo = {
+    model: modelo,
+    temperature: 0,
+    max_completion_tokens: 4000,
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: "analise_cnpj", strict: true, schema: ESQUEMA_RESPOSTA },
     },
-    system: INSTRUCOES,
     messages: [
+      { role: "system", content: INSTRUCOES },
       {
         role: "user",
         content: montarMensagem({ perfil, nomeInformado, dados, checagens }),
       },
     ],
-  });
+  };
 
-  if (resposta.stop_reason === "refusal") {
-    throw new RespostaIaInvalidaError("A IA recusou a análise.");
+  // Só os modelos gpt-oss aceitam o nível de raciocínio.
+  if (modelo.startsWith("openai/gpt-oss")) {
+    corpo.reasoning_effort = "low";
   }
 
-  if (resposta.stop_reason === "max_tokens") {
+  const resposta = await chamarLlm(corpo);
+  const escolha = resposta?.choices?.[0];
+
+  if (escolha?.finish_reason === "length") {
     throw new RespostaIaInvalidaError("A resposta da IA veio cortada.");
   }
 
-  const texto = resposta.content
-    .filter((bloco) => bloco.type === "text")
-    .map((bloco) => bloco.text)
-    .join("");
+  if (escolha?.message?.refusal) {
+    throw new RespostaIaInvalidaError("A IA recusou a análise.");
+  }
 
   let json;
   try {
-    json = JSON.parse(texto);
+    json = JSON.parse(escolha?.message?.content ?? "");
   } catch {
     throw new RespostaIaInvalidaError("A IA não devolveu um JSON válido.");
   }
 
-  return { ...validarRespostaIa(json), modelo: resposta.model };
+  return { ...validarRespostaIa(json), modelo: resposta.model ?? modelo };
 }
 
 /** Explica, sem expor detalhes internos, por que a IA não rodou. */
 function motivoDaFalhaDaIa(error) {
-  if (error instanceof RespostaIaInvalidaError) return error.message;
-  if (error instanceof Anthropic.AuthenticationError) {
-    return "A chave da IA (ANTHROPIC_API_KEY) é inválida.";
-  }
-  if (error instanceof Anthropic.RateLimitError) {
-    return "Limite de uso da IA atingido. Tente de novo em instantes.";
-  }
-  if (error instanceof Anthropic.APIConnectionError) {
-    return "Não foi possível falar com o serviço de IA.";
-  }
-  if (error instanceof Anthropic.APIError) {
-    return `O serviço de IA respondeu com erro (${error.status ?? "sem status"}).`;
+  if (
+    error instanceof RespostaIaInvalidaError ||
+    error instanceof IaIndisponivelError
+  ) {
+    return error.message;
   }
 
-  // O SDK falha antes de qualquer requisição quando não acha credencial.
-  return "IA não configurada: defina ANTHROPIC_API_KEY no .env da API.";
+  return "Não foi possível rodar a análise com IA.";
 }
 
 /* --------------------------- orquestração ------------------------- */

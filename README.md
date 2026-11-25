@@ -1043,8 +1043,8 @@ npm run migrate:analise-cnpj   # cria a tabela analises_cnpj (aditiva, pode repe
 ```
 
 - No cadastro de um CACAMBEIRO ou PARCEIRO (status PENDENTE), a análise roda em segundo plano e fica salva. `POST /api/usuarios/:id/analise-cnpj` refaz; `GET` lê a última (404 `ANALISE_NAO_ENCONTRADA` se não houver).
-- Fluxo: dígitos verificadores, consulta na BrasilAPI (reserva: Minha Receita), regras fixas (situação cadastral, tempo de abertura) e uma chamada ao Claude com saída em JSON Schema que classifica as atividades (CNAE) e o nome e escreve o parecer. A nota de 0 a 10 vem de pesos fixos (`PESOS` em `src/services/analiseCnpjService.js`); o LLM não escolhe o número.
+- Fluxo: dígitos verificadores, consulta na BrasilAPI (reserva: Minha Receita), regras fixas (situação cadastral, tempo de abertura) e uma chamada ao LLM `openai/gpt-oss-120b` pela Groq (plano gratuito), com saída em JSON Schema estrito, que classifica as atividades (CNAE) e o nome e escreve o parecer. A nota de 0 a 10 vem de pesos fixos (`PESOS` em `src/services/analiseCnpjService.js`); o LLM não escolhe o número.
 - CNPJ inválido, inexistente ou com situação diferente de ATIVA é reprovado pelas regras, sem chamar o LLM.
 - Sócios, e-mail e telefone da empresa não vão para o LLM nem para o banco.
-- Sem `ANTHROPIC_API_KEY`, a análise sai só com as regras (sem nota) e pede conferência manual da atividade. `ANALISE_CNPJ_IA=false` desliga o LLM, `ANALISE_CNPJ_NO_CADASTRO=false` desliga a análise automática no cadastro e `ANALISE_CNPJ_MODELO` troca o modelo (padrão `claude-opus-5-5`).
+- Sem `GROQ_API_KEY` (crie em console.groq.com/keys), a análise sai só com as regras (sem nota) e pede conferência manual da atividade. `ANALISE_CNPJ_IA=false` desliga o LLM, `ANALISE_CNPJ_NO_CADASTRO=false` desliga a análise automática no cadastro e `ANALISE_CNPJ_MODELO` troca o modelo da Groq (padrão `openai/gpt-oss-120b`).
 - Fontes fora do ar: `503 CNPJ_CONSULTA_INDISPONIVEL`.
